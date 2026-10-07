@@ -26322,6 +26322,7 @@ func (c *Checker) UnionTypes() iter.Seq[*Type] {
 func (c *Checker) addTypesToUnion(sourceTypes []*Type) ([]*Type, TypeFlags) {
 	types := make([]*Type, 0, len(sourceTypes))
 	var includes TypeFlags
+	sorted := true
 	addType := func(t *Type) {
 		flags := t.flags
 		// We ignore 'never' types in unions
@@ -26352,6 +26353,7 @@ func (c *Checker) addTypesToUnion(sourceTypes []*Type) ([]*Type, TypeFlags) {
 	var lastType *Type
 	for _, t := range sourceTypes {
 		if t != lastType {
+			start := len(types)
 			if t.flags&TypeFlagsUnion != 0 {
 				u := t.AsUnionType()
 				if t.alias != nil || u.origin != nil {
@@ -26363,12 +26365,35 @@ func (c *Checker) addTypesToUnion(sourceTypes []*Type) ([]*Type, TypeFlags) {
 			} else {
 				addType(t)
 			}
+			// Each flattened union is already sorted, and filtering preserves that order.
+			// Only the boundaries between inputs can make the result unsorted.
+			if sorted && start > 0 && len(types) > start && CompareTypes(types[start-1], types[start]) > 0 {
+				sorted = false
+			}
 			lastType = t
 		}
 	}
 	if len(types) >= 2 {
-		// Sort and deduplicate types
-		slices.SortStableFunc(types, CompareTypes)
+		if !sorted {
+			switch {
+			case len(types) == 2:
+				types[0], types[1] = types[1], types[0]
+			case len(sourceTypes) == 2 && (sourceTypes[0].flags^sourceTypes[1].flags)&TypeFlagsUnion != 0:
+				// Inserting a single type into an existing union only requires a
+				// binary search and a move, not comparisons of its constituents.
+				index := 0
+				if sourceTypes[0].flags&TypeFlagsUnion != 0 {
+					index = len(types) - 1
+				}
+				t := types[index]
+				types = slices.Delete(types, index, index+1)
+				types, _ = insertType(types, t)
+			default:
+				// CompareTypes uses type IDs as its final tie-breaker, so distinct types
+				// never compare equal and sorting does not need to be stable.
+				slices.SortFunc(types, CompareTypes)
+			}
+		}
 		unique := 1
 		for _, t := range types[1:] {
 			if t != types[unique-1] {

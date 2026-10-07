@@ -633,6 +633,9 @@ func compareTypeNames(t1, t2 *Type) int {
 	s1 := getTypeNameSymbol(t1)
 	s2 := getTypeNameSymbol(t2)
 	if s1 == s2 {
+		if t1.alias == t2.alias {
+			return 0
+		}
 		return compareTypeLists(t1.alias.TypeArguments(), t2.alias.TypeArguments())
 	}
 	if s1 == nil {
@@ -706,8 +709,10 @@ func compareTypeLists(s1, s2 []*Type) int {
 		return len(s1) - len(s2)
 	}
 	for i, t1 := range s1 {
-		if c := CompareTypes(t1, s2[i]); c != 0 {
-			return c
+		if t1 != s2[i] {
+			if c := CompareTypes(t1, s2[i]); c != 0 {
+				return c
+			}
 		}
 	}
 	return 0
