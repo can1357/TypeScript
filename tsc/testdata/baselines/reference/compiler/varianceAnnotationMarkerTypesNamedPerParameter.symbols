@@ -1,0 +1,29 @@
+//// [tests/cases/compiler/varianceAnnotationMarkerTypesNamedPerParameter.ts] ////
+
+=== varianceAnnotationMarkerTypesNamedPerParameter.ts ===
+// Each invalid variance annotation reports its own marker types (super-U, sub-U, ...), not those
+// of the first annotation checked.
+type A<in T> = { x: T };
+>A : Symbol(A, Decl(varianceAnnotationMarkerTypesNamedPerParameter.ts, 0, 0))
+>T : Symbol(T, Decl(varianceAnnotationMarkerTypesNamedPerParameter.ts, 2, 7))
+>x : Symbol(x, Decl(varianceAnnotationMarkerTypesNamedPerParameter.ts, 2, 16))
+>T : Symbol(T, Decl(varianceAnnotationMarkerTypesNamedPerParameter.ts, 2, 7))
+
+type B<in U> = { x: U };
+>B : Symbol(B, Decl(varianceAnnotationMarkerTypesNamedPerParameter.ts, 2, 24))
+>U : Symbol(U, Decl(varianceAnnotationMarkerTypesNamedPerParameter.ts, 3, 7))
+>x : Symbol(x, Decl(varianceAnnotationMarkerTypesNamedPerParameter.ts, 3, 16))
+>U : Symbol(U, Decl(varianceAnnotationMarkerTypesNamedPerParameter.ts, 3, 7))
+
+type C<out V> = (v: V) => void;
+>C : Symbol(C, Decl(varianceAnnotationMarkerTypesNamedPerParameter.ts, 3, 24))
+>V : Symbol(V, Decl(varianceAnnotationMarkerTypesNamedPerParameter.ts, 4, 7))
+>v : Symbol(v, Decl(varianceAnnotationMarkerTypesNamedPerParameter.ts, 4, 17))
+>V : Symbol(V, Decl(varianceAnnotationMarkerTypesNamedPerParameter.ts, 4, 7))
+
+type D<out W> = (w: W) => void;
+>D : Symbol(D, Decl(varianceAnnotationMarkerTypesNamedPerParameter.ts, 4, 31))
+>W : Symbol(W, Decl(varianceAnnotationMarkerTypesNamedPerParameter.ts, 5, 7))
+>w : Symbol(w, Decl(varianceAnnotationMarkerTypesNamedPerParameter.ts, 5, 17))
+>W : Symbol(W, Decl(varianceAnnotationMarkerTypesNamedPerParameter.ts, 5, 7))
+

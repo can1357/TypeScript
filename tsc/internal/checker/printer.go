@@ -56,6 +56,31 @@ func (c *Checker) TypeToStringEx(t *Type, enclosingDeclaration *ast.Node, flags 
 	return c.typeToStringEx(t, enclosingDeclaration, flags, vc)
 }
 
+// typeToStringKey identifies a memoizable typeToStringEx call; see typeToStringEx.
+type typeToStringKey struct {
+	t                    *Type
+	enclosingDeclaration *ast.Node
+	flags                TypeFormatFlags
+	// Variance checks print their marker types using the type parameter under check.
+	varianceTypeParameter *Type
+}
+
+// typeToStringEntry is a memoized print and the number of type instantiations a repeat of it
+// performs. ready is false after the first print, which records nothing: it performs the lazy
+// resolutions and instantiations that later prints find cached, so it costs more than a repeat.
+// depth is the deepest instantiation depth a print started at without reaching the depth limit;
+// a print that starts no deeper does not reach it either.
+type typeToStringEntry struct {
+	text           string
+	instantiations uint32
+	depth          int
+	ready          bool
+}
+
+// maxInstantiationCount is the number of type instantiations caused by one statement or expression
+// after which instantiateTypeWithAlias gives up (TS2589).
+const maxInstantiationCount = 5_000_000
+
 func (c *Checker) typeToStringEx(t *Type, enclosingDeclaration *ast.Node, flags TypeFormatFlags, vc *VerbosityContext) string {
 	// Serialization of types can lead to (lazy) resolution of members, which can cause diagnostics that again require
 	// serialization of types. This can potentially result in infinite recursion and stack overflows. To prevent that,
@@ -63,6 +88,43 @@ func (c *Checker) typeToStringEx(t *Type, enclosingDeclaration *ast.Node, flags 
 	if c.serializationLevel >= maxSerializationLevel {
 		return "?"
 	}
+	// Relation error elaboration prints the same few types tens of thousands of times, mostly in branches whose
+	// errors are discarded. The first print performs, with all of its side effects, every lazy resolution the
+	// serialization needs; a repeated print with the same inputs only revisits those cached results and yields the
+	// same text. Nested prints are not memoized because they can be cut short at maxSerializationLevel.
+	// A repeat must leave the checker as the print would have. So prints are not memoized while resolving members
+	// (mapped and anonymous types have empty members until their resolution completes, and print as {} meanwhile),
+	// nor when they report a diagnostic (such as TS2589 for a too deep instantiation) or run into a type resolution
+	// cycle (which yields degraded text and marks the in-progress resolutions as circular). A print without either
+	// leaves everything it depends on resolved, so no later print of the same inputs runs into one. Memoized repeats
+	// count the instantiations a repeat performs (measured by the second print), and are recomputed if those would
+	// reach the instantiation limit or if they start deeper in instantiations than the prints seen so far.
+	memoize := vc == nil && c.serializationLevel == 0 && c.resolvingMembers == 0
+	var key typeToStringKey
+	var entry typeToStringEntry
+	var seen bool
+	depth := len(c.instantiationStack)
+	if memoize {
+		key = typeToStringKey{t, enclosingDeclaration, flags, c.varianceTypeParameter}
+		entry, seen = c.typeToStringCache[key]
+		if entry.ready && depth <= entry.depth && c.instantiationCount+entry.instantiations < maxInstantiationCount {
+			c.instantiationCount += entry.instantiations
+			return entry.text
+		}
+	}
+	events, instantiations := c.printSensitiveEvents, c.instantiationCount
+	result := c.typeToStringWorker(t, enclosingDeclaration, flags, vc)
+	if memoize && c.printSensitiveEvents == events && c.instantiationCount >= instantiations {
+		if c.typeToStringCache == nil {
+			c.typeToStringCache = make(map[typeToStringKey]typeToStringEntry)
+		}
+		// The first print only marks the inputs as seen; the second one is memoized.
+		c.typeToStringCache[key] = typeToStringEntry{result, c.instantiationCount - instantiations, max(depth, entry.depth), seen}
+	}
+	return result
+}
+
+func (c *Checker) typeToStringWorker(t *Type, enclosingDeclaration *ast.Node, flags TypeFormatFlags, vc *VerbosityContext) string {
 	newLine := ""
 	if flags&TypeFormatFlagsMultilineObjectLiterals != 0 {
 		newLine = "\n"
