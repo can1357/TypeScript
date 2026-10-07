@@ -16,7 +16,12 @@ func TestAddTypesToUnionOrdering(t *testing.T) {
 		never := c.newIntrinsicType(TypeFlagsNever, "never")
 		ab := c.newUnionType(ObjectFlagsNone, []*Type{a, b})
 		bz := c.newUnionType(ObjectFlagsNone, []*Type{b, z})
-		choices := []*Type{a, b, b2, z, undefined, never, ab, bz}
+		nullableTypes := []*Type{a, undefined}
+		slices.SortFunc(nullableTypes, CompareTypes)
+		nullable := c.newUnionType(ObjectFlagsNone, nullableTypes)
+		named := c.newUnionType(ObjectFlagsNone, []*Type{b2, z})
+		named.alias = &TypeAlias{}
+		choices := []*Type{a, b, b2, z, undefined, never, ab, bz, nullable, named}
 		for _, first := range choices {
 			for _, second := range choices {
 				for _, third := range choices {
@@ -27,6 +32,9 @@ func TestAddTypesToUnionOrdering(t *testing.T) {
 							constituents := []*Type{input}
 							if input.flags&TypeFlagsUnion != 0 {
 								constituents = input.Types()
+								if input.alias != nil || input.AsUnionType().origin != nil {
+									includes |= TypeFlagsUnion
+								}
 							}
 							for _, typ := range constituents {
 								if typ.flags&TypeFlagsNever != 0 {
@@ -48,6 +56,23 @@ func TestAddTypesToUnionOrdering(t *testing.T) {
 						}
 					}
 				}
+			}
+		}
+	}
+}
+
+func TestContainsTypePointerHits(t *testing.T) {
+	c := &Checker{}
+	var types []*Type
+	for range 10 {
+		types = append(types, c.newIntrinsicType(TypeFlagsString, "string"))
+	}
+	for length := 0; length <= len(types); length++ {
+		for _, target := range types {
+			actual := containsType(types[:length], target)
+			expected := slices.Contains(types[:length], target)
+			if actual != expected {
+				t.Fatalf("length=%d target=%v: containsType=%v, want %v", length, target, actual, expected)
 			}
 		}
 	}
