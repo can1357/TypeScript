@@ -275,10 +275,13 @@ func (w *filesParser) start(loader *fileLoader, tasks []*parseTask, depth int) {
 		if task.path == "" {
 			panic("parse task must have a path key: " + task.normalizedFilePath.AsString())
 		}
-		candidate := getParseTaskData(task)
-		data, loaded := w.taskDataByPath.LoadOrStore(task.path, candidate)
-		if loaded {
-			putParseTaskData(candidate)
+		data, loaded := w.taskDataByPath.Load(task.path)
+		if !loaded {
+			candidate := getParseTaskData(task)
+			data, loaded = w.taskDataByPath.LoadOrStore(task.path, candidate)
+			if loaded {
+				putParseTaskData(candidate)
+			}
 		}
 
 		w.wg.Queue(func() {
