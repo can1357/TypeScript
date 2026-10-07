@@ -61,8 +61,9 @@ calling routine unless stated otherwise.
 
 **STRINGS_EQUAL**(_a_, _b_, _caseSensitive_)
 
-> 1. If _caseSensitive_ is **true**, return whether _a_ and _b_ are byte-for-byte identical.
-> 2. Return whether _a_ and _b_ are equal under Unicode case folding.
+> 1. If _a_ and _b_ are byte-for-byte identical, return **true**.
+> 2. If _caseSensitive_ is **true**, return **false**.
+> 3. Return whether _a_ and _b_ are equal under Unicode case folding.
 
 **IS_IMPLICIT_GLOB**(_component_)
 
