@@ -43,6 +43,49 @@ func TestTemplateLiteralUnionAlternatives(t *testing.T) {
 	assert.Equal(t, len(p.GetSemanticDiagnostics(t.Context(), nil)), 0)
 }
 
+func TestInheritedMemberAllocation(t *testing.T) {
+	t.Parallel()
+
+	fs := bundled.WrapFS(vfstest.FromMap(map[string]string{
+		"/main.ts": `
+class Base<T> {
+  value!: T;
+  inherited = "base";
+  static inherited = "static";
+  static overridden: string | number = 0;
+  #private = 0;
+}
+class Derived extends Base<number> {
+  value = 1;
+  own = true;
+  static overridden = "derived";
+}
+interface Left { left: number; shared: string }
+interface Right { right: boolean; shared: string }
+interface Both extends Left, Right { own: number }
+declare const combined: Both;
+declare const base: Base<string>;
+const left: number = combined.left;
+const right: boolean = combined.right;
+const shared: string = combined.shared;
+const own: number = combined.own;
+const baseValue: string = base.value;
+const instance: number = new Derived().value;
+const inherited: string = new Derived().inherited;
+const staticInherited: string = Derived.inherited;
+const staticOverride: string = Derived.overridden;
+`,
+		"/tsconfig.json": `{"compilerOptions": {"strict": true, "target": "esnext"}, "files": ["main.ts"]}`,
+	}, tspath.CaseInsensitive))
+	parsed, errors := tsoptions.GetParsedCommandLineOfConfigFile("/tsconfig.json", &core.CompilerOptions{}, nil, fs, nil)
+	assert.Equal(t, len(errors), 0)
+	p := compiler.NewProgram(compiler.ProgramOptions{
+		Config: parsed,
+		Host:   compiler.NewCompilerHost(fs, bundled.LibPath(), nil, nil, nil),
+	})
+	assert.Equal(t, len(p.GetSemanticDiagnostics(t.Context(), nil)), 0)
+}
+
 func TestGetSymbolAtLocation(t *testing.T) {
 	t.Parallel()
 

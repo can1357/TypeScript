@@ -675,6 +675,8 @@ type Checker struct {
 	symbolWithDataArena                         core.Arena[ast.SymbolWithData]
 	signatureArena                              core.Arena[Signature]
 	indexInfoArena                              core.Arena[IndexInfo]
+	typeReferenceArena                          core.Arena[TypeReference]
+	literalTypeArena                            core.Arena[LiteralType]
 	mergedSymbols                               map[*ast.Symbol]*ast.Symbol
 	mergedExportsChecked                        collections.Set[*ast.Symbol]
 	factory                                     ast.NodeFactory
@@ -19567,16 +19569,18 @@ func (c *Checker) resolveObjectTypeMembers(t *Type, source *Type, typeParameters
 	}
 	baseTypes := c.getBaseTypes(source)
 	if len(baseTypes) != 0 {
-		if !instantiated {
-			members = maps.Clone(members)
-		}
 		thisArgument := core.LastOrNil(typeArguments)
-		for _, baseType := range baseTypes {
+		for i, baseType := range baseTypes {
 			instantiatedBaseType := baseType
 			if thisArgument != nil {
 				instantiatedBaseType = c.getTypeWithThisArgument(c.instantiateType(baseType, mapper), thisArgument, false /*needsApparentType*/)
 			}
-			members = c.addInheritedMembers(members, c.getPropertiesOfType(instantiatedBaseType))
+			baseProperties := c.getPropertiesOfType(instantiatedBaseType)
+			if i == 0 && !instantiated {
+				members = c.cloneAndAddInheritedMembers(members, baseProperties)
+			} else {
+				members = c.addInheritedMembers(members, baseProperties)
+			}
 			callSignatures = core.Concatenate(callSignatures, c.getSignaturesOfType(instantiatedBaseType, SignatureKindCall))
 			constructSignatures = core.Concatenate(constructSignatures, c.getSignaturesOfType(instantiatedBaseType, SignatureKindConstruct))
 			var inheritedIndexInfos []*IndexInfo
@@ -20031,6 +20035,25 @@ func (c *Checker) getTypeWithThisArgument(t *Type, thisArgument *Type, needAppar
 		return c.getApparentType(t)
 	}
 	return t
+}
+
+func (c *Checker) cloneAndAddInheritedMembers(symbols ast.SymbolTable, baseSymbols []*ast.Symbol) ast.SymbolTable {
+	// Size the copy for exactly the new inherited names, rather than growing a
+	// clone sized only for the declared members. Overrides do not add entries.
+	size := len(symbols)
+	for _, base := range baseSymbols {
+		if !isStaticPrivateIdentifierProperty(base) {
+			if _, ok := symbols[base.Name()]; !ok {
+				size++
+			}
+		}
+	}
+	if size == 0 && symbols == nil {
+		return nil
+	}
+	result := make(ast.SymbolTable, size)
+	maps.Copy(result, symbols)
+	return c.addInheritedMembers(result, baseSymbols)
 }
 
 func (c *Checker) addInheritedMembers(symbols ast.SymbolTable, baseSymbols []*ast.Symbol) ast.SymbolTable {
@@ -21124,8 +21147,7 @@ func (c *Checker) resolveAnonymousTypeMembers(t *Type) {
 		classType := c.getDeclaredTypeOfClassOrInterface(symbol)
 		baseConstructorType := c.getBaseConstructorTypeOfClass(classType)
 		if baseConstructorType.flags&(TypeFlagsObject|TypeFlagsIntersection|TypeFlagsTypeVariable) != 0 {
-			members = maps.Clone(members)
-			c.addInheritedMembers(members, c.getPropertiesOfType(baseConstructorType))
+			members = c.cloneAndAddInheritedMembers(members, c.getPropertiesOfType(baseConstructorType))
 			c.setStructuredTypeMembers(t, members, nil, nil, nil)
 		} else if baseConstructorType == c.anyType {
 			baseConstructorIndexInfo = c.anyBaseTypeIndexInfo
@@ -25763,7 +25785,7 @@ func (c *Checker) createUnknownUnionType() *Type {
 }
 
 func (c *Checker) newLiteralType(flags TypeFlags, value any, regularType *Type) *Type {
-	data := &LiteralType{}
+	data := c.literalTypeArena.New()
 	data.value = value
 	t := c.newType(flags, ObjectFlagsNone, data)
 	if regularType != nil {
@@ -25790,7 +25812,7 @@ func (c *Checker) newObjectType(objectFlags ObjectFlags, symbol *ast.Symbol) *Ty
 	case objectFlags&ObjectFlagsTuple != 0:
 		data = &TupleType{}
 	case objectFlags&ObjectFlagsReference != 0:
-		data = &TypeReference{}
+		data = c.typeReferenceArena.New()
 	case objectFlags&ObjectFlagsMapped != 0:
 		data = &MappedType{}
 	case objectFlags&ObjectFlagsReverseMapped != 0:
@@ -25800,6 +25822,9 @@ func (c *Checker) newObjectType(objectFlags ObjectFlags, symbol *ast.Symbol) *Ty
 	case objectFlags&ObjectFlagsInstantiationExpressionType != 0:
 		data = &InstantiationExpressionType{}
 	case objectFlags&ObjectFlagsAnonymous != 0:
+		// Not from an arena: many anonymous types are dropped soon after they are created (each
+		// step of an object spread creates one), and an arena chunk lives as long as any of its
+		// types, keeping the member tables of all others alive with it.
 		data = &ObjectType{}
 	default:
 		panic("Unhandled case in newObjectType")
