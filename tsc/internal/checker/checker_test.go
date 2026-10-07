@@ -27,7 +27,10 @@ func TestTemplateLiteralUnionAlternatives(t *testing.T) {
 			"type CheckProduct = Assert<Equal<Product, 'a1' | 'a2' | 'b1' | 'b2'>>;\n" +
 			"type Nested<T extends string> = `${'x' | 'y'}${`${T}${1 | 2}`}`;\n" +
 			"type CheckNested = Assert<Equal<Nested<'a' | 'b'>, 'xa1' | 'xa2' | 'xb1' | 'xb2' | 'ya1' | 'ya2' | 'yb1' | 'yb2'>>;\n" +
-			"type CheckPattern = Assert<Equal<Nested<string>, `x${string}1` | `x${string}2` | `y${string}1` | `y${string}2`>>;\n",
+			"type CheckPattern = Assert<Equal<Nested<string>, `x${string}1` | `x${string}2` | `y${string}1` | `y${string}2`>>;\n" +
+			"type Five<T extends string> = `${T}-${T}-${T}-${T}-${T}`;\n" +
+			"type CheckFive = Assert<Equal<Five<string>, `${string}-${string}-${string}-${string}-${string}`>>;\n" +
+			"type CheckFiveProduct = Assert<Equal<Five<'a'>, 'a-a-a-a-a'>>;\n",
 		"/tsconfig.json": `{"compilerOptions": {"strict": true}, "files": ["main.ts"]}`,
 	}, tspath.CaseInsensitive))
 
