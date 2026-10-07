@@ -33,27 +33,54 @@ func (s *LinkStore[K, V]) TryGet(key K) *V {
 
 // PagedArenaLinkStore indexes arena-allocated values by dense IDs. Unlike a
 // PagedLinkStore, allocating a page does not make its other entries present.
-// Pointer pages keep sparse stores from allocating an entire page of large values.
+// Pages contain one-based value offsets rather than pointers, halving their
+// size and excluding the sparse index entries from GC pointer scanning.
 type PagedArenaLinkStore[V any] struct {
-	store PagedLinkStore[*V]
-	arena Arena[V]
+	store  PagedLinkStore[uint32]
+	blocks []*[arenaLinkBlockSize]V
+	count  uint32
 }
+
+// For values whose size is a multiple of eight bytes, blocks occupy exact
+// multiples of the runtime's 8KB heap pages, avoiding unused size-class padding.
+const (
+	arenaLinkBlockShift = 10
+	arenaLinkBlockSize  = 1 << arenaLinkBlockShift
+	arenaLinkBlockMask  = arenaLinkBlockSize - 1
+)
 
 func (s *PagedArenaLinkStore[V]) Get(key uint64) *V {
 	link := s.store.Get(key)
-	if *link == nil {
-		*link = s.arena.New()
+	index := *link
+	if index == 0 {
+		return s.allocate(link)
 	}
-	return *link
+	index--
+	return &s.blocks[index>>arenaLinkBlockShift][index&arenaLinkBlockMask]
+}
+
+func (s *PagedArenaLinkStore[V]) allocate(link *uint32) *V {
+	if s.count == ^uint32(0) {
+		panic("PagedArenaLinkStore exceeds 4294967295 live entries")
+	}
+	index := s.count
+	if index&arenaLinkBlockMask == 0 {
+		s.blocks = append(s.blocks, new([arenaLinkBlockSize]V))
+	}
+	s.count++
+	*link = s.count
+	return &s.blocks[index>>arenaLinkBlockShift][index&arenaLinkBlockMask]
 }
 
 func (s *PagedArenaLinkStore[V]) Has(key uint64) bool {
-	return s.TryGet(key) != nil
+	link := s.store.TryGet(key)
+	return link != nil && *link != 0
 }
 
 func (s *PagedArenaLinkStore[V]) TryGet(key uint64) *V {
-	if link := s.store.TryGet(key); link != nil {
-		return *link
+	if link := s.store.TryGet(key); link != nil && *link != 0 {
+		index := *link - 1
+		return &s.blocks[index>>arenaLinkBlockShift][index&arenaLinkBlockMask]
 	}
 	return nil
 }

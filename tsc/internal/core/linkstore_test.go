@@ -2,6 +2,22 @@ package core
 
 import "testing"
 
+func TestPagedArenaLinkStoreOverflow(t *testing.T) {
+	var store PagedArenaLinkStore[int]
+	value := store.Get(7)
+	*value = 42
+	store.count = ^uint32(0)
+	if store.Get(7) != value || *value != 42 {
+		t.Fatal("existing entry changed at maximum count")
+	}
+	defer func() {
+		if got := recover(); got != "PagedArenaLinkStore exceeds 4294967295 live entries" {
+			t.Fatalf("unexpected overflow panic: %v", got)
+		}
+	}()
+	store.Get(8)
+}
+
 func TestPagedArenaLinkStore(t *testing.T) {
 	t.Parallel()
 
@@ -21,7 +37,7 @@ func TestPagedArenaLinkStore(t *testing.T) {
 			t.Fatalf("unaccessed neighbor of key %d present", key)
 		}
 	}
-	for key := uint64(1); key < 2048; key++ {
+	for key := uint64(1); key < 3*arenaLinkBlockSize; key++ {
 		store.Get(key)
 	}
 	for i, key := range keys {
