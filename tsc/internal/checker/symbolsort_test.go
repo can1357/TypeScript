@@ -128,8 +128,14 @@ func TestTypeReferencePropertyOrderReuse(t *testing.T) {
 	if target.objectFlags&ObjectFlagsMembersResolved != 0 {
 		t.Fatal("seeding an order must not resolve the target")
 	}
-	if !slices.Equal(c.instantiatedPropertyOrders[target], first.AsStructuredType().properties) {
-		t.Fatal("first instantiation did not seed the target order")
+	layout := c.instantiatedPropertyOrders[target]
+	if layout == nil || len(layout.keys) != len(first.AsStructuredType().properties) {
+		t.Fatal("first instantiation did not seed the target layout")
+	}
+	for i, property := range first.AsStructuredType().properties {
+		if layout.keys[i] != makeMemberOrderKey(property) {
+			t.Fatal("target layout must snapshot the sorted member keys")
+		}
 	}
 	copyMembers := func() ast.SymbolTable {
 		result := make(ast.SymbolTable, len(members))
@@ -166,7 +172,7 @@ func TestTypeReferencePropertyOrderReuse(t *testing.T) {
 		t.Run(change.name, func(t *testing.T) {
 			table := copyMembers()
 			change.mutate(table)
-			if _, ok := c.tryReusePropertyOrder(table, first.AsStructuredType().properties, true); ok {
+			if _, ok := c.tryReusePropertyOrder(table, layout, true); ok {
 				t.Fatal("changed member shape must reject the cached order")
 			}
 			result := newReference(table)
@@ -179,8 +185,8 @@ func TestTypeReferencePropertyOrderReuse(t *testing.T) {
 	delete(c.instantiatedPropertyOrders, target)
 	c.symbolSortKeys = nil
 	newReference(copyMembers())
-	if c.symbolSortKeys != nil || len(c.instantiatedPropertyOrders) != 0 {
-		t.Fatal("a resolved target must supply its own order without sorting or caching")
+	if c.symbolSortKeys != nil || c.instantiatedPropertyOrders[target] == nil {
+		t.Fatal("a resolved target must supply its own layout without sorting")
 	}
 }
 
@@ -188,13 +194,13 @@ func TestPropertyOrderReuseReturnsCurrentMembers(t *testing.T) {
 	c := &Checker{}
 	source := newTestSymbol(ast.SymbolFlagsProperty, "property")
 	member := newTestSymbol(source.Flags(), source.Name())
-	order := []*ast.Symbol{source}
+	order := newMemberLayout([]*ast.Symbol{source})
 	result, ok := c.tryReusePropertyOrder(ast.SymbolTable{member.Name(): member}, order, false)
 	if !ok || len(result) != 1 || result[0] != member {
 		t.Fatal("reuse must return the current table's symbol")
 	}
-	if order[0] != source {
-		t.Fatal("reuse must not mutate the cached property order")
+	if order.keys[0] != makeMemberOrderKey(source) {
+		t.Fatal("reuse must not mutate the cached property keys")
 	}
 	if result, ok := c.tryReusePropertyOrder(ast.SymbolTable{"different": member}, order, false); ok || result != nil {
 		t.Fatal("failed validation must not return a partial result")
@@ -205,7 +211,138 @@ func TestPropertyOrderReuseDistinguishesNilDeclarations(t *testing.T) {
 	c := &Checker{}
 	source := newTestSymbol(ast.SymbolFlagsProperty, "property", nil)
 	member := newTestSymbol(source.Flags(), source.Name())
-	if _, ok := c.tryReusePropertyOrder(ast.SymbolTable{member.Name(): member}, []*ast.Symbol{source}, false); ok {
+	if _, ok := c.tryReusePropertyOrder(ast.SymbolTable{member.Name(): member}, newMemberLayout([]*ast.Symbol{source}), false); ok {
 		t.Fatal("a missing declaration and an explicit nil declaration have different comparison ranks")
+	}
+}
+
+func TestCompactTypeReferenceMembers(t *testing.T) {
+	file := parser.ParseSourceFile(ast.SourceFileParseOptions{}, "interface Base { inherited: string; override: string; } interface Derived { own: number; override: number; }", core.ScriptKindTS)
+	c := &Checker{fileIndexMap: createFileIndexMap([]*ast.SourceFile{file})}
+	c.couldContainTypeVariables = c.couldContainTypeVariablesWorker
+	c.compareSymbols = c.compareSymbolsWorker
+	makeMembers := func(declaration *ast.Node) ast.SymbolTable {
+		result := make(ast.SymbolTable)
+		for _, member := range declaration.Members() {
+			result[member.Name().Text()] = newTestSymbol(ast.SymbolFlagsProperty, member.Name().Text(), member)
+		}
+		return result
+	}
+	baseSymbol := newTestSymbol(ast.SymbolFlagsInterface, "", file.Statements.Nodes[0])
+	baseMembers := makeMembers(baseSymbol.Declarations()[0])
+	base := c.newAnonymousType(baseSymbol, baseMembers, nil, nil, nil)
+	symbol := newTestSymbol(ast.SymbolFlagsInterface, "", file.Statements.Nodes[1])
+	declared := makeMembers(symbol.Declarations()[0])
+	declared[ast.InternalSymbolNameCall] = newTestSymbol(0, ast.InternalSymbolNameCall)
+	target := c.newObjectType(ObjectFlagsInterface|ObjectFlagsReference, symbol)
+	data := target.AsInterfaceType()
+	data.target = target
+	data.declaredMembersResolved = true
+	data.declaredMembers = declared
+	data.baseTypesResolved = true
+	data.resolvedBaseTypes = []*Type{base}
+	parameter := c.newTypeParameter(nil)
+	argument := c.newIntrinsicType(TypeFlagsAny, "any")
+	resolve := func() *Type {
+		t.Helper()
+		result := c.newObjectType(ObjectFlagsReference, symbol)
+		result.AsTypeReference().target = target
+		before := c.SymbolCount
+		c.resolveObjectTypeMembers(result, target, []*Type{parameter}, []*Type{argument})
+		if c.SymbolCount-before != 2 {
+			t.Fatal("each declared named symbol must be instantiated exactly once")
+		}
+		return result
+	}
+	first := resolve()
+	if first.AsStructuredType().members == nil || first.AsStructuredType().memberLayout != nil {
+		t.Fatal("the first resolution must use the map path to establish a canonical layout")
+	}
+	second := resolve()
+	resolved := second.AsStructuredType()
+	if resolved.members != nil || resolved.memberLayout == nil {
+		t.Fatal("matching reference instances must not allocate a member table")
+	}
+	if resolved.member("inherited") != baseMembers["inherited"] || resolved.member("override") == baseMembers["override"] {
+		t.Fatal("inherited members and declared overrides must be selected exactly as before")
+	}
+	if resolved.member(ast.InternalSymbolNameCall) != nil || resolved.member("absent") != nil {
+		t.Fatal("reserved and absent names must remain absent")
+	}
+	for i, property := range first.AsStructuredType().properties {
+		member := resolved.properties[i]
+		if member.Name() != property.Name() || core.FirstOrNil(member.Declarations()) != core.FirstOrNil(property.Declarations()) || resolved.member(member.Name()) != member {
+			t.Fatal("layout lookup and property order must select the instantiated symbols")
+		}
+		if c.getPropertyOfObjectType(second, member.Name()) != member {
+			t.Fatal("object property lookup must support compact member storage")
+		}
+	}
+	resolved.signatures = []*Signature{{}}
+	withoutSignatures := c.getTypeWithoutSignatures(second).AsStructuredType()
+	if resolved.memberLayout != nil || withoutSignatures.memberLayout != nil {
+		t.Fatal("a table-sharing clone must materialize the table")
+	}
+	table := resolved.memberTable()
+	added := newTestSymbol(ast.SymbolFlagsProperty, "added")
+	table[added.Name()] = added
+	if resolved.member("added") != added || withoutSignatures.member("added") != added || resolved.memberTable()["added"] != added {
+		t.Fatal("materialized table aliases must preserve lookup and sharing semantics")
+	}
+	baseMembers["new"] = newTestSymbol(ast.SymbolFlagsProperty, "new")
+	c.setStructuredTypeMembers(base, baseMembers, nil, nil, nil)
+	changed := resolve().AsStructuredType()
+	if changed.memberLayout != nil || changed.members == nil || changed.member("new") != baseMembers["new"] {
+		t.Fatal("a new inherited name must fall back to an exact member table")
+	}
+	delete(baseMembers, "new")
+	oldInherited := baseMembers["inherited"]
+	baseMembers["inherited"] = newTestSymbol(ast.SymbolFlagsProperty, oldInherited.Name(), declared["own"].Declarations()...)
+	baseMembers["inherited"].SetValueDeclaration(oldInherited.ValueDeclaration())
+	c.setStructuredTypeMembers(base, baseMembers, nil, nil, nil)
+	changed = resolve().AsStructuredType()
+	c.resolveObjectTypeMembers(target, target, []*Type{parameter}, []*Type{parameter})
+	if target.AsStructuredType().memberLayout != nil || target.AsStructuredType().member(ast.InternalSymbolNameCall) != declared[ast.InternalSymbolNameCall] {
+		t.Fatal("non-instantiated targets must retain their full original member table")
+	}
+	if changed.memberLayout != nil || changed.members == nil || changed.member("inherited") != baseMembers["inherited"] {
+		t.Fatal("changed inherited declaration keys must fall back without re-instantiation")
+	}
+}
+
+func TestMemberLayoutBuilderInheritedSelection(t *testing.T) {
+	c := &Checker{}
+	nonValue := newTestSymbol(ast.SymbolFlagsTypeAlias, "overridden")
+	value := newTestSymbol(ast.SymbolFlagsProperty, "overridden")
+	original := newTestSymbol(ast.SymbolFlagsProperty, "own")
+	ignored := newTestSymbol(ast.SymbolFlagsProperty, original.Name())
+	inherited := newTestSymbol(ast.SymbolFlagsProperty, "inherited")
+	canonical := []*ast.Symbol{value, original, inherited}
+	layout := newMemberLayout(canonical)
+	builder := memberTableBuilder{layout: layout, properties: make([]*ast.Symbol, len(canonical))}
+	builder.set(nonValue.Name(), nonValue)
+	builder.set(original.Name(), original)
+	builder.addInheritedMembers([]*ast.Symbol{value, ignored, inherited})
+	if !c.membersMatchLayout(builder.properties, layout, false) || builder.members != nil ||
+		builder.member(value.Name()) != value || builder.member(original.Name()) != original || builder.member(inherited.Name()) != inherited {
+		t.Fatal("layout inheritance must replace non-values, retain declared values, and add missing members")
+	}
+	if builder.member("absent") != nil {
+		t.Fatal("an absent layout name must not select index zero")
+	}
+	builder.properties[0] = newTestSymbol(ast.SymbolFlagsAlias, value.Name())
+	if c.membersMatchLayout(builder.properties, layout, false) {
+		t.Fatal("alias-only values must preserve map-path resolution timing")
+	}
+	builder.properties[0] = nil
+	if c.membersMatchLayout(builder.properties, layout, false) {
+		t.Fatal("a missing layout slot must reject compaction")
+	}
+	table := builder.memberTable()
+	if len(table) != 2 || table[original.Name()] != original || table[inherited.Name()] != inherited {
+		t.Fatal("failed validation must materialize only members actually present")
+	}
+	if newMemberLayout([]*ast.Symbol{value, value}) != nil {
+		t.Fatal("duplicate canonical names cannot define an exact layout")
 	}
 }

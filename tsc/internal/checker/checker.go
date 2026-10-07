@@ -589,7 +589,7 @@ type Checker struct {
 	files                                       []*ast.SourceFile
 	fileIndexMap                                map[*ast.SourceFile]int
 	symbolSortKeys                              []symbolSortKey
-	instantiatedPropertyOrders                  map[*Type][]*ast.Symbol
+	instantiatedPropertyOrders                  map[*Type]*memberLayout
 	compareSymbols                              func(*ast.Symbol, *ast.Symbol) int
 	compareSymbolChains                         func([]*ast.Symbol, []*ast.Symbol) int
 	TypeCount                                   uint32
@@ -4608,7 +4608,7 @@ func (c *Checker) getTypeWithoutSignatures(t *Type) *Type {
 		if len(resolved.signatures) != 0 {
 			result := c.newObjectType(ObjectFlagsAnonymous, t.symbol)
 			result.objectFlags |= ObjectFlagsMembersResolved
-			result.AsObjectType().members = resolved.members
+			result.AsObjectType().members = resolved.memberTable()
 			result.AsObjectType().properties = resolved.properties
 			return result
 		}
@@ -10945,7 +10945,7 @@ func (c *Checker) getInstantiationExpressionType(exprType *Type, node *ast.Node)
 					debug.Assert(t.symbol != nil, "Instantiation expression source type must have a symbol")
 					symbol.SetDeclarations(t.symbol.Declarations())
 					result := c.newObjectType(ObjectFlagsAnonymous|ObjectFlagsInstantiationExpressionType, symbol)
-					c.setStructuredTypeMembers(result, resolved.members, callSignatures, constructSignatures, resolved.indexInfos)
+					c.setStructuredTypeMembers(result, resolved.memberTable(), callSignatures, constructSignatures, resolved.indexInfos)
 					result.AsInstantiationExpressionType().node = node
 					return result
 				}
@@ -16142,7 +16142,7 @@ func (c *Checker) cloneTypeAsModuleType(symbol *ast.Symbol, moduleType *Type, re
 	links.target = symbol
 	links.originatingImport = referenceParent
 	resolvedModuleType := c.resolveStructuredTypeMembers(moduleType)
-	c.valueSymbolLinks.Get(result).resolvedType = c.newAnonymousType(result, resolvedModuleType.members, nil, nil, resolvedModuleType.indexInfos)
+	c.valueSymbolLinks.Get(result).resolvedType = c.newAnonymousType(result, resolvedModuleType.memberTable(), nil, nil, resolvedModuleType.indexInfos)
 	return result
 }
 
@@ -19363,10 +19363,10 @@ func (c *Checker) getPropertyOfTypeEx(t *Type, name string, skipObjectFunctionPr
 	switch {
 	case t.flags&TypeFlagsObject != 0:
 		resolved := c.resolveStructuredTypeMembers(t)
-		symbol := resolved.members[name]
+		symbol := resolved.member(name)
 		if symbol != nil {
 			if !includeTypeOnlyMembers && t.symbol != nil && t.symbol.Flags()&ast.SymbolFlagsValueModule != 0 && c.moduleSymbolLinks.Get(t.symbol).typeOnlyExportStarMap[name] != nil {
-				// If this is the type of a module, `resolved.members.get(name)` might have effectively skipped over
+				// If this is the type of a module, `resolved.member(name)` might have effectively skipped over
 				// an `export type * from './foo'`, leaving `symbolIsValue` unable to see that the symbol is being
 				// viewed through a type-only export.
 				return nil
@@ -19564,6 +19564,7 @@ func (c *Checker) resolveTypeReferenceMembers(t *Type) {
 func (c *Checker) resolveObjectTypeMembers(t *Type, source *Type, typeParameters []*Type, typeArguments []*Type) {
 	var mapper *TypeMapper
 	var members ast.SymbolTable
+	var memberBuilder memberTableBuilder
 	var callSignatures []*Signature
 	var constructSignatures []*Signature
 	var indexInfos []*IndexInfo
@@ -19577,7 +19578,11 @@ func (c *Checker) resolveObjectTypeMembers(t *Type, source *Type, typeParameters
 	} else {
 		instantiated = true
 		mapper = newTypeMapper(typeParameters, typeArguments)
-		members = c.instantiateSymbolTable(resolved.declaredMembers, mapper)
+		var layout *memberLayout
+		if t != source && t.symbol == source.symbol {
+			layout = c.getMemberLayout(source)
+		}
+		memberBuilder = c.instantiateSymbolTable(resolved.declaredMembers, mapper, layout)
 		callSignatures = c.instantiateSignatures(resolved.declaredCallSignatures, mapper)
 		constructSignatures = c.instantiateSignatures(resolved.declaredConstructSignatures, mapper)
 		indexInfos = c.instantiateIndexInfos(resolved.declaredIndexInfos, mapper)
@@ -19591,7 +19596,9 @@ func (c *Checker) resolveObjectTypeMembers(t *Type, source *Type, typeParameters
 				instantiatedBaseType = c.getTypeWithThisArgument(c.instantiateType(baseType, mapper), thisArgument, false /*needsApparentType*/)
 			}
 			baseProperties := c.getPropertiesOfType(instantiatedBaseType)
-			if i == 0 && !instantiated {
+			if instantiated {
+				memberBuilder.addInheritedMembers(baseProperties)
+			} else if i == 0 {
 				members = c.cloneAndAddInheritedMembers(members, baseProperties)
 			} else {
 				members = c.addInheritedMembers(members, baseProperties)
@@ -19608,6 +19615,19 @@ func (c *Checker) resolveObjectTypeMembers(t *Type, source *Type, typeParameters
 				return findIndexInfo(indexInfos, info.keyType) == nil
 			}))
 		}
+	}
+	if instantiated {
+		partition := t.symbol != nil && t.symbol.Flags()&(ast.SymbolFlagsClass|ast.SymbolFlagsInterface) != 0
+		if memberBuilder.layout != nil && c.membersMatchLayout(memberBuilder.properties, memberBuilder.layout, partition) {
+			t.objectFlags |= ObjectFlagsMembersResolved
+			data := t.AsStructuredType()
+			data.members = nil
+			data.memberLayout = memberBuilder.layout
+			data.properties = memberBuilder.properties
+			setStructuredTypeSignatures(data, callSignatures, constructSignatures, indexInfos)
+			return
+		}
+		members = memberBuilder.memberTable()
 	}
 	c.setStructuredTypeMembers(t, members, callSignatures, constructSignatures, indexInfos)
 }
@@ -21212,14 +21232,72 @@ func (c *Checker) createInstantiatedSymbolTable(symbols []*ast.Symbol, m *TypeMa
 	return result
 }
 
-func (c *Checker) instantiateSymbolTable(symbols ast.SymbolTable, m *TypeMapper) ast.SymbolTable {
-	if len(symbols) == 0 {
+type memberTableBuilder struct {
+	layout     *memberLayout
+	properties []*ast.Symbol
+	members    ast.SymbolTable
+}
+
+func (b *memberTableBuilder) member(name string) *ast.Symbol {
+	if b.layout != nil {
+		if index, ok := b.layout.indices[name]; ok {
+			return b.properties[index]
+		}
 		return nil
 	}
-	result := make(ast.SymbolTable, len(symbols))
+	return b.members[name]
+}
+
+func (b *memberTableBuilder) memberTable() ast.SymbolTable {
+	if b.layout != nil {
+		b.members = make(ast.SymbolTable, len(b.properties))
+		for i, symbol := range b.properties {
+			if symbol != nil {
+				b.members[b.layout.keys[i].name] = symbol
+			}
+		}
+		b.layout = nil
+		b.properties = nil
+	}
+	return b.members
+}
+
+func (b *memberTableBuilder) set(name string, symbol *ast.Symbol) {
+	if b.layout != nil {
+		if index, ok := b.layout.indices[name]; ok {
+			b.properties[index] = symbol
+			return
+		}
+		b.memberTable()
+	}
+	b.members[name] = symbol
+}
+
+func (b *memberTableBuilder) addInheritedMembers(symbols []*ast.Symbol) {
+	for _, symbol := range symbols {
+		if !isStaticPrivateIdentifierProperty(symbol) {
+			if previous := b.member(symbol.Name()); previous == nil || previous.Flags()&ast.SymbolFlagsValue == 0 {
+				if b.layout == nil && b.members == nil {
+					b.members = make(ast.SymbolTable, len(symbols))
+				}
+				b.set(symbol.Name(), symbol)
+			}
+		}
+	}
+}
+
+func (c *Checker) instantiateSymbolTable(symbols ast.SymbolTable, m *TypeMapper, layout *memberLayout) memberTableBuilder {
+	result := memberTableBuilder{layout: layout}
+	if layout != nil {
+		result.properties = make([]*ast.Symbol, len(layout.keys))
+	} else if len(symbols) != 0 {
+		result.members = make(ast.SymbolTable, len(symbols))
+	}
+	// Preserve the declared-table traversal and symbol creation order. A layout
+	// changes only where the instantiated symbols are stored, not when they exist.
 	for id, symbol := range symbols {
 		if c.isNamedMember(symbol, id) {
-			result[id] = c.instantiateSymbol(symbol, m)
+			result.set(id, c.instantiateSymbol(symbol, m))
 		}
 	}
 	return result
@@ -21884,7 +21962,7 @@ func (c *Checker) includeMixinType(t *Type, types []*Type, mixinFlags []bool, in
 func (c *Checker) getPropertyOfObjectType(t *Type, name string) *ast.Symbol {
 	if t.flags&TypeFlagsObject != 0 {
 		resolved := c.resolveStructuredTypeMembers(t)
-		symbol := resolved.members[name]
+		symbol := resolved.member(name)
 		if symbol != nil && c.symbolIsValue(symbol) {
 			return symbol
 		}
@@ -22387,7 +22465,7 @@ func (c *Checker) somePropertyReducesToNever(t *Type) bool {
 	types := t.Types()
 	var properties [4][]*ast.Symbol
 	if len(types) <= len(properties) {
-		var members [4]ast.SymbolTable
+		var members [4]*StructuredType
 		for i, current := range types {
 			apparent := c.getReducedApparentType(current)
 			if apparent.flags&TypeFlagsUnionOrIntersection != 0 {
@@ -22395,17 +22473,27 @@ func (c *Checker) somePropertyReducesToNever(t *Type) bool {
 			} else {
 				properties[i] = c.getPropertiesOfObjectType(apparent)
 				if apparent.flags&TypeFlagsObject != 0 {
-					members[i] = apparent.AsStructuredType().members
+					members[i] = apparent.AsStructuredType()
 				}
 			}
 		}
 		namedMembers := true
 		for i, table := range members[:len(types)] {
-			if table == nil && len(properties[i]) != 0 {
+			if table == nil {
+				if len(properties[i]) != 0 {
+					namedMembers = false
+					break
+				}
+				continue
+			}
+			if table.memberLayout != nil {
+				continue // Layout validation already guarantees matching names.
+			}
+			if table.members == nil && len(properties[i]) != 0 {
 				namedMembers = false
 				break
 			}
-			for name, prop := range table {
+			for name, prop := range table.members {
 				if name != prop.Name() {
 					namedMembers = false
 					break
@@ -22426,20 +22514,24 @@ func (c *Checker) somePropertyReducesToNever(t *Type) bool {
 				for _, prop := range props {
 					seen := false
 					for _, previous := range members[:i] {
-						if other := previous[prop.Name()]; other != nil && c.isNamedMember(other, prop.Name()) {
-							seen = true
-							break
+						if previous != nil {
+							if other := previous.member(prop.Name()); other != nil && c.isNamedMember(other, prop.Name()) {
+								seen = true
+								break
+							}
 						}
 					}
 					if seen {
 						continue
 					}
 					for _, next := range members[i+1 : len(types)] {
-						if other := next[prop.Name()]; other != nil && c.isNamedMember(other, prop.Name()) {
-							if combined := c.getPropertyOfUnionOrIntersectionType(t, prop.Name(), true /*skipObjectFunctionPropertyAugment*/); combined != nil && c.isNeverReducedProperty(combined) {
-								return true
+						if next != nil {
+							if other := next.member(prop.Name()); other != nil && c.isNamedMember(other, prop.Name()) {
+								if combined := c.getPropertyOfUnionOrIntersectionType(t, prop.Name(), true /*skipObjectFunctionPropertyAugment*/); combined != nil && c.isNeverReducedProperty(combined) {
+									return true
+								}
+								break
 							}
-							break
 						}
 					}
 				}
@@ -22720,19 +22812,60 @@ func (c *Checker) getNamedMembers(members ast.SymbolTable, container *ast.Symbol
 	return result
 }
 
-func (c *Checker) tryReusePropertyOrder(members ast.SymbolTable, properties []*ast.Symbol, partition bool) ([]*ast.Symbol, bool) {
-	if len(members) != len(properties) {
+func makeMemberOrderKey(symbol *ast.Symbol) memberOrderKey {
+	return memberOrderKey{
+		name:             symbol.Name(),
+		declaration:      core.FirstOrNil(symbol.Declarations()),
+		valueDeclaration: symbol.ValueDeclaration(),
+		hasDeclaration:   len(symbol.Declarations()) != 0,
+	}
+}
+
+func newMemberLayout(properties []*ast.Symbol) *memberLayout {
+	if len(properties) == 0 {
+		return nil
+	}
+	result := &memberLayout{
+		keys:    make([]memberOrderKey, len(properties)),
+		indices: make(map[string]int, len(properties)),
+	}
+	for i, property := range properties {
+		if _, exists := result.indices[property.Name()]; exists {
+			return nil
+		}
+		result.keys[i] = makeMemberOrderKey(property)
+		result.indices[property.Name()] = i
+	}
+	return result
+}
+
+func (c *Checker) memberMatchesOrder(symbol *ast.Symbol, key memberOrderKey, partition bool) bool {
+	return symbol != nil && symbol.Name() == key.name && c.isNamedMember(symbol, key.name) &&
+		(len(symbol.Declarations()) != 0) == key.hasDeclaration &&
+		core.FirstOrNil(symbol.Declarations()) == key.declaration &&
+		(!partition || symbol.ValueDeclaration() == key.valueDeclaration)
+}
+
+func (c *Checker) membersMatchLayout(properties []*ast.Symbol, layout *memberLayout, partition bool) bool {
+	for i, key := range layout.keys {
+		symbol := properties[i]
+		// Alias-only value resolution can re-enter the checker. Keep such members
+		// on the map path, whose members-resolved timing is unchanged.
+		if symbol == nil || symbol.Flags()&ast.SymbolFlagsValue == 0 || !c.memberMatchesOrder(symbol, key, partition) {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *Checker) tryReusePropertyOrder(members ast.SymbolTable, layout *memberLayout, partition bool) ([]*ast.Symbol, bool) {
+	if layout == nil || len(members) != len(layout.keys) {
 		return nil, false
 	}
-	// Matching value declarations imply the same contained partition. Collect
-	// the validated members directly instead of hashing every name a second time.
-	result := make([]*ast.Symbol, len(properties))
-	for i, property := range properties {
-		symbol := members[property.Name()]
-		if symbol == nil || symbol.Name() != property.Name() || !c.isNamedMember(symbol, property.Name()) ||
-			(len(symbol.Declarations()) == 0) != (len(property.Declarations()) == 0) ||
-			core.FirstOrNil(symbol.Declarations()) != core.FirstOrNil(property.Declarations()) ||
-			partition && symbol.ValueDeclaration() != property.ValueDeclaration() {
+	result := make([]*ast.Symbol, len(layout.keys))
+	for i, key := range layout.keys {
+		symbol := members[key.name]
+		if !c.memberMatchesOrder(symbol, key, partition) {
 			return nil, false
 		}
 		result[i] = symbol
@@ -22740,29 +22873,43 @@ func (c *Checker) tryReusePropertyOrder(members ast.SymbolTable, properties []*a
 	return result, true
 }
 
+func (c *Checker) cacheMemberLayout(target *Type, properties []*ast.Symbol) *memberLayout {
+	if layout := c.instantiatedPropertyOrders[target]; layout != nil {
+		return layout
+	}
+	layout := newMemberLayout(properties)
+	if layout != nil {
+		if c.instantiatedPropertyOrders == nil {
+			c.instantiatedPropertyOrders = make(map[*Type]*memberLayout)
+		}
+		c.instantiatedPropertyOrders[target] = layout
+	}
+	return layout
+}
+
+func (c *Checker) getMemberLayout(target *Type) *memberLayout {
+	if layout := c.instantiatedPropertyOrders[target]; layout != nil {
+		return layout
+	}
+	if target.objectFlags&ObjectFlagsMembersResolved != 0 {
+		return c.cacheMemberLayout(target, target.AsStructuredType().properties)
+	}
+	return nil
+}
+
 func (c *Checker) getTypeReferenceProperties(t *Type, members ast.SymbolTable) []*ast.Symbol {
 	target := t.AsTypeReference().target
 	if t.symbol == target.symbol {
-		var properties []*ast.Symbol
-		if target.objectFlags&ObjectFlagsMembersResolved != 0 {
-			properties = target.AsStructuredType().properties
-		} else {
-			properties = c.instantiatedPropertyOrders[target]
-		}
 		partition := t.symbol != nil && t.symbol.Flags()&(ast.SymbolFlagsClass|ast.SymbolFlagsInterface) != 0
-		if result, ok := c.tryReusePropertyOrder(members, properties, partition); ok {
+		if result, ok := c.tryReusePropertyOrder(members, c.getMemberLayout(target), partition); ok {
 			return result
 		}
 	}
 	result := c.getNamedMembers(members, t.symbol)
-	if target.objectFlags&ObjectFlagsMembersResolved == 0 && t.symbol == target.symbol {
-		// Do not force target resolution: that could introduce recursive resolution.
-		// The first sorted instantiation supplies an order, and every reuse validates
-		// that the chosen members still have the same names and declaration sort keys.
-		if c.instantiatedPropertyOrders == nil {
-			c.instantiatedPropertyOrders = make(map[*Type][]*ast.Symbol)
-		}
-		c.instantiatedPropertyOrders[target] = result
+	if t.symbol == target.symbol {
+		// Do not force target resolution. Snapshot the first sorted order without
+		// retaining instantiated symbols, and validate every subsequent reuse.
+		c.cacheMemberLayout(target, result)
 	}
 	return result
 }
@@ -25955,6 +26102,7 @@ func (c *Checker) setStructuredTypeMembers(t *Type, members ast.SymbolTable, cal
 	t.objectFlags |= ObjectFlagsMembersResolved
 	data := t.AsStructuredType()
 	data.members = members
+	data.memberLayout = nil
 	if len(members) == 0 {
 		data.properties = nil
 	} else if t.objectFlags&(ObjectFlagsAnonymous|ObjectFlagsReverseMapped) == ObjectFlagsAnonymous && t.AsObjectType().target != nil {
@@ -25971,6 +26119,10 @@ func (c *Checker) setStructuredTypeMembers(t *Type, members ast.SymbolTable, cal
 	} else {
 		data.properties = c.getNamedMembers(members, t.symbol)
 	}
+	setStructuredTypeSignatures(data, callSignatures, constructSignatures, indexInfos)
+}
+
+func setStructuredTypeSignatures(data *StructuredType, callSignatures []*Signature, constructSignatures []*Signature, indexInfos []*IndexInfo) {
 	if len(callSignatures) != 0 {
 		if len(constructSignatures) != 0 {
 			data.signatures = core.Concatenate(callSignatures, constructSignatures)
@@ -32094,7 +32246,7 @@ func (c *Checker) isFunctionObjectType(t *Type) bool {
 	// We do a quick check for a "bind" property before performing the more expensive subtype
 	// check. This gives us a quicker out in the common case where an object type is not a function.
 	resolved := c.resolveStructuredTypeMembers(t)
-	return len(resolved.signatures) != 0 || resolved.members["bind"] != nil && c.isTypeSubtypeOf(t, c.globalFunctionType)
+	return len(resolved.signatures) != 0 || resolved.member("bind") != nil && c.isTypeSubtypeOf(t, c.globalFunctionType)
 }
 
 func (c *Checker) getTypeWithFacts(t *Type, include TypeFacts) *Type {
@@ -32590,7 +32742,7 @@ func (c *Checker) getSymbolAtLocation(node *ast.Node, ignoreErrors bool) *ast.Sy
 			// member should more exactly be the kind of (declarationless) symbol we want.
 			// (See #44364 and #45031 for relevant implementation PRs)
 			if metaProp.KeywordToken == ast.KindImportKeyword && node.Text() == "meta" {
-				return c.getGlobalImportMetaExpressionType().AsObjectType().members["meta"]
+				return c.getGlobalImportMetaExpressionType().AsObjectType().member("meta")
 			}
 			// no other meta properties are valid syntax, thus no others should have symbols
 			return nil
