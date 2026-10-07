@@ -487,10 +487,10 @@ func (p *globPattern) patternMentionsMinSuffix(segs []segment) bool {
 
 // stringsEqual compares strings with appropriate case sensitivity.
 func (p *globPattern) stringsEqual(a, b string) bool {
-	if p.caseSensitivity.IsCaseSensitive() {
-		return a == b
+	if a == b {
+		return true
 	}
-	return strings.EqualFold(a, b)
+	return p.caseSensitivity.IsCaseInsensitive() && strings.EqualFold(a, b)
 }
 
 // isHiddenPath checks if a path component is hidden (starts with dot).
