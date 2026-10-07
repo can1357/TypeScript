@@ -905,7 +905,7 @@ type Checker struct {
 	ctx                                         context.Context
 	packagesMap                                 map[string]bool
 	activeMappers                               []*TypeMapper
-	activeTypeMappersCaches                     []map[CacheHashKey]*Type
+	activeTypeMappersCaches                     []activeMapperCache
 	ambientModulesOnce                          sync.Once
 	ambientModules                              []*ast.Symbol
 	withinUnreachableCode                       bool
@@ -18048,7 +18048,7 @@ func getRelationKey(source *Type, target *Type, intersectionState IntersectionSt
 	}
 	// Two 31-bit type IDs and the two intersection-state bits fit exactly.
 	// Larger IDs or future state bits keep the original hashed representation.
-	if source.id < 1<<31 && target.id < 1<<31 && intersectionState < 4 {
+	if source.id|target.id < 1<<31 && intersectionState < 4 {
 		packed := uint64(source.id)<<33 | uint64(target.id)<<2 | uint64(intersectionState)
 		return relationKey{hash: CacheHashKey{Lo: packed}, simple: true}, false
 	}
@@ -22772,6 +22772,21 @@ func (c *Checker) symbolIsValueEx(symbol *ast.Symbol, includeTypeOnlyMembers boo
 		c.getSymbolFlagsEx(symbol, !includeTypeOnlyMembers, false /*excludeLocalMeanings*/)&ast.SymbolFlagsValue != 0
 }
 
+// Without an alias, the active mapper's key contains only the type ID.
+type activeMapperCache struct {
+	types   map[TypeId]*Type
+	aliases map[CacheHashKey]*Type
+}
+
+func (cache *activeMapperCache) clear() {
+	if len(cache.types) != 0 {
+		clear(cache.types)
+	}
+	if len(cache.aliases) != 0 {
+		clear(cache.aliases)
+	}
+}
+
 func (c *Checker) instantiateType(t *Type, m *TypeMapper) *Type {
 	return c.instantiateTypeWithAlias(t, m, nil /*alias*/)
 }
@@ -22805,12 +22820,19 @@ func (c *Checker) instantiateTypeWithAlias(t *Type, m *TypeMapper, alias *TypeAl
 	if index == -1 {
 		c.pushActiveMapper(m)
 	}
-	var b keyBuilder
-	b.writeType(t)
-	b.writeAlias(alias)
-	key := b.hash()
+	var key CacheHashKey
+	if alias != nil {
+		var b keyBuilder
+		b.writeType(t)
+		b.writeAlias(alias)
+		key = b.hash()
+	}
 	cache := c.activeTypeMappersCaches[core.IfElse(index != -1, index, len(c.activeTypeMappersCaches)-1)]
-	if cachedType, ok := cache[key]; ok {
+	if alias == nil {
+		if cachedType, ok := cache.types[t.id]; ok {
+			return cachedType
+		}
+	} else if cachedType, ok := cache.aliases[key]; ok {
 		return cachedType
 	}
 	c.TotalInstantiationCount++
@@ -22820,15 +22842,19 @@ func (c *Checker) instantiateTypeWithAlias(t *Type, m *TypeMapper, alias *TypeAl
 	if index == -1 {
 		c.popActiveMapper()
 	} else {
-		if cache == nil {
-			// Recursive instantiation may have allocated this frame's cache.
-			cache = c.activeTypeMappersCaches[index]
-			if cache == nil {
-				cache = make(map[CacheHashKey]*Type, 1)
-				c.activeTypeMappersCaches[index] = cache
+		// Recursive instantiation can allocate a cache or move its backing slice.
+		cache := &c.activeTypeMappersCaches[index]
+		if alias == nil {
+			if cache.types == nil {
+				cache.types = make(map[TypeId]*Type, 1)
 			}
+			cache.types[t.id] = result
+		} else {
+			if cache.aliases == nil {
+				cache.aliases = make(map[CacheHashKey]*Type, 1)
+			}
+			cache.aliases[key] = result
 		}
-		cache[key] = result
 	}
 	c.instantiationStack[len(c.instantiationStack)-1] = nil
 	c.instantiationStack = c.instantiationStack[:len(c.instantiationStack)-1]
@@ -22864,7 +22890,7 @@ func (c *Checker) pushActiveMapper(mapper *TypeMapper) {
 		c.activeTypeMappersCaches = c.activeTypeMappersCaches[:lastIndex+1]
 	} else {
 		// Allocate only if a recursive use of this mapper stores a result.
-		c.activeTypeMappersCaches = append(c.activeTypeMappersCaches, nil)
+		c.activeTypeMappersCaches = append(c.activeTypeMappersCaches, activeMapperCache{})
 	}
 }
 
@@ -22872,11 +22898,9 @@ func (c *Checker) popActiveMapper() {
 	c.activeMappers[len(c.activeMappers)-1] = nil
 	c.activeMappers = c.activeMappers[:len(c.activeMappers)-1]
 
-	// Clear the map, but leave it in the list for later reuse.
+	// Clear both key domains, leaving their maps available for reuse.
 	lastIndex := len(c.activeTypeMappersCaches) - 1
-	if cache := c.activeTypeMappersCaches[lastIndex]; len(cache) != 0 {
-		clear(cache)
-	}
+	c.activeTypeMappersCaches[lastIndex].clear()
 	c.activeTypeMappersCaches = c.activeTypeMappersCaches[:lastIndex]
 }
 
@@ -22885,10 +22909,8 @@ func (c *Checker) findActiveMapper(mapper *TypeMapper) int {
 }
 
 func (c *Checker) clearActiveMapperCaches() {
-	for _, cache := range c.activeTypeMappersCaches {
-		if len(cache) != 0 {
-			clear(cache)
-		}
+	for i := range c.activeTypeMappersCaches {
+		c.activeTypeMappersCaches[i].clear()
 	}
 }
 

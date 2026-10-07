@@ -131,27 +131,61 @@ func TestLazyMapperCache(t *testing.T) {
 		return number
 	})
 	c.pushActiveMapper(mapper)
-	if c.activeTypeMappersCaches[0] != nil {
+	if c.activeTypeMappersCaches[0].types != nil || c.activeTypeMappersCaches[0].aliases != nil {
 		t.Fatal("empty mapper frame allocated a cache")
 	}
-	if c.instantiateType(outer, mapper) != number || len(c.activeTypeMappersCaches[0]) != 2 {
+	if c.instantiateType(outer, mapper) != number || len(c.activeTypeMappersCaches[0].types) != 2 {
 		t.Fatal("outer instantiation replaced its recursively allocated cache")
 	}
 	count := c.TotalInstantiationCount
 	if c.instantiateType(inner, mapper) != number || c.TotalInstantiationCount != count {
 		t.Fatal("nested instantiation was not cached")
 	}
-	cache := c.activeTypeMappersCaches[0]
+	cache := c.activeTypeMappersCaches[0].types
 	c.popActiveMapper()
 	if len(cache) != 0 || len(c.activeMappers) != 0 {
 		t.Fatal("mapper cache not cleared on pop")
 	}
 	c.pushActiveMapper(mapper)
-	if c.activeTypeMappersCaches[0] == nil {
+	if c.activeTypeMappersCaches[0].types == nil {
 		t.Fatal("pop discarded the reusable cache")
 	}
 	c.clearActiveMapperCaches()
 	c.popActiveMapper()
+}
+
+func TestActiveMapperCacheDomains(t *testing.T) {
+	c := &Checker{}
+	c.couldContainTypeVariables = func(typ *Type) bool { return typ.flags&TypeFlagsTypeParameter != 0 }
+	parameter := c.newTypeParameter(nil)
+	number := c.newIntrinsicType(TypeFlagsNumber, "number")
+	mapper := newSimpleTypeMapper(parameter, number)
+	symbol := newTestSymbol(0, "Alias")
+	alias := &TypeAlias{symbol: symbol}
+	c.pushActiveMapper(mapper)
+	if c.instantiateType(parameter, mapper) != number ||
+		c.instantiateTypeWithAlias(parameter, mapper, alias) != number {
+		t.Fatal("mapper cache changed the result")
+	}
+	count := c.TotalInstantiationCount
+	if c.instantiateTypeWithAlias(parameter, mapper, &TypeAlias{symbol: symbol}) != number ||
+		c.instantiateType(parameter, mapper) != number || c.TotalInstantiationCount != count {
+		t.Fatal("mapper cache key equivalence changed")
+	}
+	cache := c.activeTypeMappersCaches[0]
+	if len(cache.types) != 1 || len(cache.aliases) != 1 {
+		t.Fatal("nil and non-nil alias domains were not kept separate")
+	}
+	c.clearActiveMapperCaches()
+	if len(cache.types) != 0 || len(cache.aliases) != 0 {
+		t.Fatal("inference invalidation did not clear both mapper cache domains")
+	}
+	c.instantiateType(parameter, mapper)
+	c.instantiateTypeWithAlias(parameter, mapper, alias)
+	c.popActiveMapper()
+	if len(cache.types) != 0 || len(cache.aliases) != 0 {
+		t.Fatal("mapper pop did not clear both cache domains")
+	}
 }
 
 func TestInferencePoolReset(t *testing.T) {
@@ -318,6 +352,12 @@ func TestGenericRelationKeys(t *testing.T) {
 	broadest, _ := getRelationKey(pp, qq, IntersectionStateSource, false, true)
 	if constrainedKey.simple || !constrained || broadest.simple || constrainedKey == broadest {
 		t.Fatal("constrained/broadest generic key distinction changed")
+	}
+	freshReference := reference(p)
+	plain := c.newObjectType(ObjectFlagsAnonymous, nil)
+	simple, _ := getRelationKey(freshReference, plain, IntersectionStateNone, false, false)
+	if !simple.simple || freshReference.objectFlags&ObjectFlagsGenericArgumentsComputed == 0 {
+		t.Fatal("non-reference target skipped source reference classification")
 	}
 }
 
