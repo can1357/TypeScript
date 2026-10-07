@@ -1114,6 +1114,20 @@ type ConstrainedType struct {
 
 func (t *ConstrainedType) AsConstrainedType() *ConstrainedType { return t }
 
+type memberOrderKey struct {
+	name             string
+	declaration      *ast.Node
+	valueDeclaration *ast.Node
+	hasDeclaration   bool
+}
+
+// A layout is immutable and shared by references with the same named-member
+// shape. Keep declaration keys, not instantiated symbols or their type mappers.
+type memberLayout struct {
+	keys    []memberOrderKey
+	indices map[string]int
+}
+
 // StructuredType (base of all types with members)
 
 type StructuredType struct {
@@ -1127,11 +1141,43 @@ type structuredTypeExtra struct {
 	signatures         []*Signature // Signatures (call + construct)
 	callSignatureCount int          // Count of call signatures
 	indexInfos         []*IndexInfo
+	// Set only while members is nil; properties then holds the members in layout order.
+	memberLayout *memberLayout
 
 	objectTypeWithoutAbstractConstructSignatures *Type
 }
 
 func (t *StructuredType) AsStructuredType() *StructuredType { return t }
+
+func (t *StructuredType) memberLayout() *memberLayout {
+	if t.members != nil || t.extra == nil {
+		return nil
+	}
+	return t.extra.memberLayout
+}
+
+func (t *StructuredType) member(name string) *ast.Symbol {
+	if layout := t.memberLayout(); layout != nil {
+		if index, ok := layout.indices[name]; ok {
+			return t.properties[index]
+		}
+		return nil
+	}
+	return t.members[name]
+}
+
+// Materialize only for callers that need an actual table. Switch subsequent
+// lookups to that table so mutations through a table alias remain observable.
+func (t *StructuredType) memberTable() ast.SymbolTable {
+	if layout := t.memberLayout(); layout != nil {
+		t.members = make(ast.SymbolTable, len(t.properties))
+		for i, symbol := range t.properties {
+			t.members[layout.keys[i].name] = symbol
+		}
+		t.extra.memberLayout = nil
+	}
+	return t.members
+}
 
 func (t *StructuredType) CallSignatures() []*Signature {
 	if t.extra == nil {
