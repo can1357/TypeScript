@@ -29862,8 +29862,12 @@ func (c *Checker) getTemplateLiteralType(texts []string, types []*Type) *Type {
 	if slices.Contains(types, c.wildcardType) {
 		return c.wildcardType
 	}
-	var newTypes []*Type
-	var newTexts []string
+	// Most normalized templates have only a few placeholders. Keep temporary
+	// spans local; only a newly cached template needs independently owned slices.
+	var typeBuffer [4]*Type
+	var textBuffer [5]string
+	newTypes := typeBuffer[:0]
+	newTexts := textBuffer[:0]
 	var sb strings.Builder
 	sb.WriteString(texts[0])
 	textLength := 0 // combined length of the segments already moved into newTexts
@@ -29920,7 +29924,7 @@ func (c *Checker) getTemplateLiteralType(texts []string, types []*Type) *Type {
 	key := getTemplateTypeKey(newTexts, newTypes)
 	t := c.templateLiteralTypes[key]
 	if t == nil {
-		t = c.newTemplateLiteralType(newTexts, newTypes)
+		t = c.newTemplateLiteralType(slices.Clone(newTexts), slices.Clone(newTypes))
 		c.templateLiteralTypes[key] = t
 	}
 	return t
