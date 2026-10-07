@@ -22336,11 +22336,80 @@ func (c *Checker) isMappingOfSameObjectType(types []*Type) bool {
 }
 
 func (c *Checker) somePropertyReducesToNever(t *Type) bool {
+	types := t.Types()
+	var properties [4][]*ast.Symbol
+	if len(types) <= len(properties) {
+		var members [4]ast.SymbolTable
+		for i, current := range types {
+			apparent := c.getReducedApparentType(current)
+			if apparent.flags&TypeFlagsUnionOrIntersection != 0 {
+				properties[i] = c.getPropertiesOfUnionOrIntersectionType(apparent)
+			} else {
+				properties[i] = c.getPropertiesOfObjectType(apparent)
+				if apparent.flags&TypeFlagsObject != 0 {
+					members[i] = apparent.AsStructuredType().members
+				}
+			}
+		}
+		namedMembers := true
+		for i, table := range members[:len(types)] {
+			if table == nil && len(properties[i]) != 0 {
+				namedMembers = false
+				break
+			}
+			for name, prop := range table {
+				if name != prop.Name() {
+					namedMembers = false
+					break
+				}
+			}
+			if !namedMembers {
+				break
+			}
+		}
+		if namedMembers {
+			// Resolve all lists before synthesis, then visit duplicates in first-occurrence
+			// order, exactly as the declaration-count pass does. Check the name invariant
+			// before using member tables (module exports can have different keys).
+			for i, props := range properties[:len(types)] {
+				if i == len(types)-1 {
+					break
+				}
+				for _, prop := range props {
+					seen := false
+					for _, previous := range members[:i] {
+						if other := previous[prop.Name()]; other != nil && c.isNamedMember(other, prop.Name()) {
+							seen = true
+							break
+						}
+					}
+					if seen {
+						continue
+					}
+					for _, next := range members[i+1 : len(types)] {
+						if other := next[prop.Name()]; other != nil && c.isNamedMember(other, prop.Name()) {
+							if combined := c.getPropertyOfUnionOrIntersectionType(t, prop.Name(), true /*skipObjectFunctionPropertyAugment*/); combined != nil && c.isNeverReducedProperty(combined) {
+								return true
+							}
+							break
+						}
+					}
+				}
+			}
+			return false
+		}
+	}
 	// Collect declaration counts for each property across all constituent types of the intersection.
 	counts := c.getTemporaryPropertyCounts()
 	defer c.releaseTemporaryPropertyCounts(counts)
-	for _, t := range t.Types() {
-		for _, prop := range c.getPropertiesOfType(t) {
+	for i, current := range types {
+		var props []*ast.Symbol
+		if len(types) <= len(properties) {
+			props = properties[i]
+		} else {
+			props = c.getPropertiesOfType(current)
+		}
+		for _, prop := range props {
 			counts.Set(prop.Name(), counts.GetOrZero(prop.Name())+1)
 		}
 	}
