@@ -1153,12 +1153,17 @@ type EvolvingArrayType struct {
 
 // UnionOrIntersectionTypeData
 
+// Keep both lookup modes together so a non-partial property populates both with one cache insertion.
+type unionOrIntersectionPropertyCacheEntry struct {
+	property                               *ast.Symbol
+	propertyWithoutFunctionPropertyAugment *ast.Symbol
+}
+
 type UnionOrIntersectionType struct {
 	StructuredType
-	types                                       []*Type
-	propertyCache                               ast.SymbolTable
-	propertyCacheWithoutFunctionPropertyAugment ast.SymbolTable
-	resolvedProperties                          []*ast.Symbol
+	types              []*Type
+	propertyCache      map[string]unionOrIntersectionPropertyCacheEntry
+	resolvedProperties []*ast.Symbol
 }
 
 func (t *UnionOrIntersectionType) AsUnionOrIntersectionType() *UnionOrIntersectionType { return t }
