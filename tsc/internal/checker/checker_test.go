@@ -138,6 +138,59 @@ export type E = D;`,
 	assert.Equal(t, defaultClause, defaultReference)
 }
 
+func TestIntersectionNeverReduction(t *testing.T) {
+	t.Parallel()
+
+	fs := bundled.WrapFS(vfstest.FromMap(map[string]string{
+		"/main.ts": `
+type Unit = { first: string; value: "a"; last: number } & { last: number; value: "b"; first: number };
+type Optional = { value?: "a" } & { value?: "b" };
+type PresentNever = { value: never } & { value: "a" };
+type NonUnit = { value: string } & { value: number };
+type ThreeWay = { value: "a" } & { value: "b" } & { other: number };
+type Union = ({ value: "a" } | { value: "c" }) & { value: "b" };
+class A { private value!: string; }
+class B { private value!: string; }
+type Private = A & B;
+class Base { private value!: string; }
+class Derived extends Base {}
+type SharedPrivate = Base & Derived;
+type Module = typeof import("./other") & { renamed: "b" };
+`,
+		"/other.ts":      `const value = "a"; export { value as renamed }; export default value;`,
+		"/tsconfig.json": `{"compilerOptions":{"strict":true},"files":["main.ts","other.ts"]}`,
+	}, tspath.CaseInsensitive))
+	host := compiler.NewCompilerHost(fs, bundled.LibPath(), nil, nil, nil)
+	parsed, errors := tsoptions.GetParsedCommandLineOfConfigFile("/tsconfig.json", &core.CompilerOptions{}, nil, fs, nil)
+	assert.Equal(t, len(errors), 0)
+	p := compiler.NewProgram(compiler.ProgramOptions{Config: parsed, Host: host})
+	p.BindSourceFiles()
+	c, done := p.GetTypeChecker(t.Context())
+	defer done()
+
+	wantNever := map[string]bool{
+		"Unit":          true,
+		"Optional":      false,
+		"PresentNever":  false,
+		"NonUnit":       false,
+		"ThreeWay":      true,
+		"Union":         true,
+		"Private":       true,
+		"SharedPrivate": false,
+		"Module":        true,
+	}
+	for _, statement := range p.GetSourceFile("/main.ts").Statements.Nodes {
+		if statement.Kind != ast.KindTypeAliasDeclaration {
+			continue
+		}
+		name := statement.Name().Text()
+		t.Run(name, func(t *testing.T) {
+			typ := c.GetTypeAtLocation(statement.AsTypeAliasDeclaration().Type)
+			assert.Equal(t, c.TypeToString(typ) == "never", wantNever[name])
+		})
+	}
+}
+
 func BenchmarkNewChecker(b *testing.B) {
 	fs := bundled.WrapFS(osvfs.FS())
 	rootPath := tspath.RootedDirectoryPathFromAbsolute(filepath.Join(repo.TestDataPath(), "fixtures/compiler"))

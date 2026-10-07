@@ -22304,17 +22304,92 @@ func (c *Checker) isMappingOfSameObjectType(types []*Type) bool {
 }
 
 func (c *Checker) somePropertyReducesToNever(t *Type) bool {
-	// Collect declaration counts for each property across all constituent types of the intersection.
-	var counts collections.OrderedMap[string, int]
-	for _, t := range t.Types() {
-		for _, prop := range c.getPropertiesOfType(t) {
-			counts.Set(prop.Name(), counts.GetOrZero(prop.Name())+1)
+	types := t.Types()
+	var properties [4][]*ast.Symbol
+	if len(types) <= len(properties) {
+		var members [4]ast.SymbolTable
+		for i, current := range types {
+			apparent := c.getReducedApparentType(current)
+			if apparent.flags&TypeFlagsUnionOrIntersection != 0 {
+				properties[i] = c.getPropertiesOfUnionOrIntersectionType(apparent)
+			} else {
+				properties[i] = c.getPropertiesOfObjectType(apparent)
+				if apparent.flags&TypeFlagsObject != 0 {
+					members[i] = apparent.AsStructuredType().members
+				}
+			}
+		}
+		namedMembers := true
+		for i, table := range members[:len(types)] {
+			if table == nil && len(properties[i]) != 0 {
+				namedMembers = false
+				break
+			}
+			for name, prop := range table {
+				if name != prop.Name() {
+					namedMembers = false
+					break
+				}
+			}
+			if !namedMembers {
+				break
+			}
+		}
+		if namedMembers {
+			// Resolve all lists before synthesis, then visit duplicates in first-occurrence
+			// order, exactly as the declaration-count pass does. Check the name invariant
+			// before using member tables (module exports can have different keys).
+			for i, props := range properties[:len(types)] {
+				if i == len(types)-1 {
+					break
+				}
+				for _, prop := range props {
+					seen := false
+					for _, previous := range members[:i] {
+						if other := previous[prop.Name()]; other != nil && c.isNamedMember(other, prop.Name()) {
+							seen = true
+							break
+						}
+					}
+					if seen {
+						continue
+					}
+					for _, next := range members[i+1 : len(types)] {
+						if other := next[prop.Name()]; other != nil && c.isNamedMember(other, prop.Name()) {
+							if combined := c.getPropertyOfUnionOrIntersectionType(t, prop.Name(), true /*skipObjectFunctionPropertyAugment*/); combined != nil && c.isNeverReducedProperty(combined) {
+								return true
+							}
+							break
+						}
+					}
+				}
+			}
+			return false
 		}
 	}
-	// Check if any property appears in more than one constituent type and reduces to 'never'.
-	// Go in the order the properties were found so the combined properties are created in the same order every time.
-	for propName, count := range counts.Entries() {
-		if count > 1 {
+	// Only distinguish absent, single, and repeated names; larger counts are irrelevant.
+	counts := make(map[string]uint8)
+	var names []string
+	for i, current := range types {
+		var props []*ast.Symbol
+		if len(types) <= len(properties) {
+			props = properties[i]
+		} else {
+			props = c.getPropertiesOfType(current)
+		}
+		for _, prop := range props {
+			switch counts[prop.Name()] {
+			case 0:
+				names = append(names, prop.Name())
+				counts[prop.Name()] = 1
+			case 1:
+				counts[prop.Name()] = 2
+			}
+		}
+	}
+	// Go in first-occurrence order so combined properties are created in the same order.
+	for _, propName := range names {
+		if counts[propName] > 1 {
 			if prop := c.getPropertyOfUnionOrIntersectionType(t, propName, true /*skipObjectFunctionPropertyAugment*/); prop != nil && c.isNeverReducedProperty(prop) {
 				return true
 			}
