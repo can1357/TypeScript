@@ -14,7 +14,7 @@ func TestRelaterPoolReset(t *testing.T) {
 	}
 	r.relatedInfo = append(r.relatedInfo, nil)
 	for i := range 12 {
-		key := CacheHashKey{Lo: uint64(i)}
+		key := relationKey{hash: CacheHashKey{Lo: uint64(i)}, simple: i%2 == 0}
 		r.maybeKeys = append(r.maybeKeys, key)
 		if i >= inlineMaybeKeys {
 			r.maybeKeysSet.Add(key)
@@ -30,7 +30,7 @@ func TestRelaterPoolReset(t *testing.T) {
 		t.Fatal("relater state was not reset")
 	}
 	for i := inlineMaybeKeys; i < 12; i++ {
-		if r.maybeKeysSet.Has(CacheHashKey{Lo: uint64(i)}) {
+		if r.maybeKeysSet.Has(relationKey{hash: CacheHashKey{Lo: uint64(i)}, simple: i%2 == 0}) {
 			t.Fatal("retained maybe key after reset")
 		}
 	}
@@ -178,19 +178,19 @@ func TestInferencePoolReset(t *testing.T) {
 
 func TestRelationCache(t *testing.T) {
 	var relation Relation
-	if relation.get(CacheHashKey{}) != RelationComparisonResultNone {
+	if relation.get(relationKey{}) != RelationComparisonResultNone {
 		t.Fatal("empty cache has a result")
 	}
 	// The same low bits force collisions, including a wrap at the table end.
 	for i := range 257 {
-		key := CacheHashKey{Lo: 15, Hi: uint64(i)}
+		key := relationKey{hash: CacheHashKey{Lo: 15, Hi: uint64(i)}}
 		relation.set(key, RelationComparisonResultSucceeded)
 	}
 	if relation.size() != 257 {
 		t.Fatalf("size = %d, want 257", relation.size())
 	}
 	for i := range 257 {
-		key := CacheHashKey{Lo: 15, Hi: uint64(i)}
+		key := relationKey{hash: CacheHashKey{Lo: 15, Hi: uint64(i)}}
 		if relation.get(key) != RelationComparisonResultSucceeded {
 			t.Fatalf("missing key %d after growth", i)
 		}
@@ -200,12 +200,12 @@ func TestRelationCache(t *testing.T) {
 		t.Fatalf("replacement changed size to %d", relation.size())
 	}
 	for i := range 257 {
-		key := CacheHashKey{Lo: 15, Hi: uint64(i)}
+		key := relationKey{hash: CacheHashKey{Lo: 15, Hi: uint64(i)}}
 		if relation.get(key) != RelationComparisonResultFailed|RelationComparisonResultReportsUnreliable {
 			t.Fatalf("replacement lost for key %d", i)
 		}
 	}
-	if relation.get(CacheHashKey{Lo: 15, Hi: 257}) != RelationComparisonResultNone {
+	if relation.get(relationKey{hash: CacheHashKey{Lo: 15, Hi: 257}}) != RelationComparisonResultNone {
 		t.Fatal("missing colliding key has a result")
 	}
 }
@@ -215,21 +215,109 @@ func TestRelationKey(t *testing.T) {
 	source := c.newObjectType(ObjectFlagsAnonymous, nil)
 	target := c.newObjectType(ObjectFlagsAnonymous, nil)
 	for _, identity := range []bool{false, true} {
-		for _, state := range []IntersectionState{IntersectionStateNone, IntersectionStateSource, IntersectionStateTarget} {
+		for _, state := range []IntersectionState{IntersectionStateNone, IntersectionStateSource, IntersectionStateTarget, IntersectionStateSource | IntersectionStateTarget} {
 			first, second := target, source
 			if identity && first.id > second.id {
 				first, second = second, first
 			}
-			var builder keyBuilder
-			builder.writeByte('s')
-			builder.writeType(first)
-			builder.writeType(second)
-			builder.writeUint32(uint32(state))
 			key, constrained := getRelationKey(target, source, state, identity, false)
-			if key != builder.hash() || constrained {
-				t.Fatal("simple relation key changed")
+			want := uint64(first.id)<<33 | uint64(second.id)<<2 | uint64(state)
+			if !key.simple || key.hash.Lo != want || key.hash.Hi != 0 || constrained {
+				t.Fatal("simple relation key encoding changed")
 			}
 		}
+	}
+}
+
+func TestRelationKeyBoundaries(t *testing.T) {
+	ids := []TypeId{0, 1, 1<<31 - 1, 1 << 31, 1<<32 - 1}
+	states := []IntersectionState{0, 1, 2, 3, 4, 1<<32 - 1}
+	for _, sourceID := range ids {
+		for _, targetID := range ids {
+			for _, state := range states {
+				source := &Type{id: sourceID}
+				target := &Type{id: targetID}
+				key, constrained := getRelationKey(source, target, state, false, false)
+				wantSimple := sourceID < 1<<31 && targetID < 1<<31 && state < 4
+				if key.simple != wantSimple || constrained {
+					t.Fatal("key took the wrong compact/fallback path")
+				}
+				if wantSimple {
+					if TypeId(key.hash.Lo>>33) != sourceID ||
+						TypeId(key.hash.Lo>>2&((1<<31)-1)) != targetID ||
+						IntersectionState(key.hash.Lo&3) != state || key.hash.Hi != 0 {
+						t.Fatal("compact key lost ID/state bits")
+					}
+				} else {
+					var builder keyBuilder
+					builder.writeByte('s')
+					builder.writeType(source)
+					builder.writeType(target)
+					builder.writeUint32(uint32(state))
+					if key.hash != builder.hash() {
+						t.Fatal("fallback hash changed")
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestRelationKeyDomains(t *testing.T) {
+	var relation Relation
+	for _, packed := range []uint64{0, 1, 1<<64 - 1} {
+		simple := relationKey{hash: CacheHashKey{Lo: packed}, simple: true}
+		hashed := relationKey{hash: simple.hash}
+		relation.set(simple, RelationComparisonResultSucceeded)
+		relation.set(hashed, RelationComparisonResultFailed|RelationComparisonResultReportsUnreliable)
+		if relation.get(simple) != RelationComparisonResultSucceeded ||
+			relation.get(hashed) != RelationComparisonResultFailed|RelationComparisonResultReportsUnreliable {
+			t.Fatal("compact and hashed domains aliased")
+		}
+		relation.set(simple, RelationComparisonResultFailed|RelationComparisonResultComplexityOverflow)
+	}
+	if relation.size() != 6 {
+		t.Fatalf("mixed cache size = %d, want 6", relation.size())
+	}
+	r := Relater{maybeKeys: []relationKey{{simple: true}}}
+	if !r.hasMaybeKey(relationKey{simple: true}) || r.hasMaybeKey(relationKey{}) {
+		t.Fatal("maybe stack confused compact zero and zero hash")
+	}
+}
+
+func TestGenericRelationKeys(t *testing.T) {
+	c := &Checker{}
+	c.noConstraintType = c.newIntrinsicType(TypeFlagsUnknown, "no constraint")
+	target := c.newObjectType(ObjectFlagsInterface|ObjectFlagsReference, nil)
+	target.AsTypeReference().target = target
+	p := c.newTypeParameter(nil)
+	q := c.newTypeParameter(nil)
+	p.AsTypeParameter().constraint = c.noConstraintType
+	q.AsTypeParameter().constraint = c.noConstraintType
+	reference := func(argument *Type) *Type {
+		typ := c.newObjectType(ObjectFlagsReference, nil)
+		typ.AsTypeReference().target = target
+		typ.AsTypeReference().resolvedTypeArguments = []*Type{argument}
+		return typ
+	}
+	pp, qq := reference(p), reference(q)
+	pKey, constrained := getRelationKey(pp, pp, IntersectionStateSource, false, false)
+	qKey, _ := getRelationKey(qq, qq, IntersectionStateSource, false, false)
+	if pKey.simple || qKey.simple || constrained || pKey != qKey {
+		t.Fatal("generic parameter renaming equivalence changed")
+	}
+	var builder keyBuilder
+	builder.writeByte('g')
+	builder.writeGenericTypeReferences(pp, pp, false)
+	builder.writeUint32(uint32(IntersectionStateSource))
+	if pKey.hash != builder.hash() {
+		t.Fatal("generic relation hash changed")
+	}
+	q.AsTypeParameter().constraint = c.newIntrinsicType(TypeFlagsNumber, "number")
+	constrainedKey, constrained := getRelationKey(pp, qq, IntersectionStateSource, false, false)
+	broadest, _ := getRelationKey(pp, qq, IntersectionStateSource, false, true)
+	if constrainedKey.simple || !constrained || broadest.simple || constrainedKey == broadest {
+		t.Fatal("constrained/broadest generic key distinction changed")
 	}
 }
 
@@ -267,7 +355,7 @@ func TestRelaterMaybeKeys(t *testing.T) {
 	var relation Relation
 	r := Relater{relation: &relation, relationCount: 100}
 	for i := range 20 {
-		key := CacheHashKey{Lo: uint64(i)}
+		key := relationKey{hash: CacheHashKey{Lo: uint64(i)}, simple: i%2 == 0}
 		r.maybeKeys = append(r.maybeKeys, key)
 		if i >= inlineMaybeKeys {
 			r.maybeKeysSet.Add(key)
@@ -278,7 +366,7 @@ func TestRelaterMaybeKeys(t *testing.T) {
 	}
 	r.resetMaybeStack(5, RelationComparisonResultReportsUnmeasurable, true)
 	for i := range 20 {
-		key := CacheHashKey{Lo: uint64(i)}
+		key := relationKey{hash: CacheHashKey{Lo: uint64(i)}, simple: i%2 == 0}
 		if r.hasMaybeKey(key) != (i < 5) {
 			t.Fatalf("wrong maybe membership for key %d", i)
 		}
@@ -290,7 +378,7 @@ func TestRelaterMaybeKeys(t *testing.T) {
 		t.Fatalf("relation count = %d, want 85", r.relationCount)
 	}
 	r.resetMaybeStack(0, RelationComparisonResultNone, false)
-	if len(r.maybeKeys) != 0 || r.hasMaybeKey(CacheHashKey{}) {
+	if len(r.maybeKeys) != 0 || r.hasMaybeKey(relationKey{}) {
 		t.Fatal("maybe stack not empty after reset")
 	}
 }

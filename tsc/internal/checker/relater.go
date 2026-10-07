@@ -95,23 +95,41 @@ func asRecursionId[T *ast.Node | *ast.Symbol | *Type](value T) RecursionId {
 	return RecursionId{value: value}
 }
 
+// Simple keys use hash.Lo for the packed IDs/state and leave hash.Hi zero.
+// The explicit tag keeps both cache domains distinct even for a zero hash.
+type relationKey struct {
+	hash   CacheHashKey
+	simple bool
+}
+
 type Relation struct {
-	results map[CacheHashKey]RelationComparisonResult
+	results       map[CacheHashKey]RelationComparisonResult
+	simpleResults map[uint64]RelationComparisonResult
 }
 
-func (r *Relation) get(key CacheHashKey) RelationComparisonResult {
-	return r.results[key]
-}
-
-func (r *Relation) set(key CacheHashKey, result RelationComparisonResult) {
-	if r.results == nil {
-		r.results = make(map[CacheHashKey]RelationComparisonResult)
+func (r *Relation) get(key relationKey) RelationComparisonResult {
+	if key.simple {
+		return r.simpleResults[key.hash.Lo]
 	}
-	r.results[key] = result
+	return r.results[key.hash]
+}
+
+func (r *Relation) set(key relationKey, result RelationComparisonResult) {
+	if key.simple {
+		if r.simpleResults == nil {
+			r.simpleResults = make(map[uint64]RelationComparisonResult)
+		}
+		r.simpleResults[key.hash.Lo] = result
+	} else {
+		if r.results == nil {
+			r.results = make(map[CacheHashKey]RelationComparisonResult)
+		}
+		r.results[key.hash] = result
+	}
 }
 
 func (r *Relation) size() int {
-	return len(r.results)
+	return len(r.results) + len(r.simpleResults)
 }
 
 func (c *Checker) isTypeIdenticalTo(source *Type, target *Type) bool {
@@ -2589,8 +2607,8 @@ type Relater struct {
 	errorNode      *ast.Node
 	errorChain     *ErrorChain
 	relatedInfo    []*ast.Diagnostic
-	maybeKeys      []CacheHashKey
-	maybeKeysSet   collections.Set[CacheHashKey]
+	maybeKeys      []relationKey
+	maybeKeysSet   collections.Set[relationKey]
 	sourceStack    []*Type
 	targetStack    []*Type
 	expandingFlags ExpandingFlags
@@ -3217,7 +3235,7 @@ func (r *Relater) recursiveTypeRelatedTo(source *Type, target *Type, reportError
 // deleting that tail on unwind avoids clearing a large retained map per call.
 const inlineMaybeKeys = 8
 
-func (r *Relater) hasMaybeKey(key CacheHashKey) bool {
+func (r *Relater) hasMaybeKey(key relationKey) bool {
 	for _, candidate := range r.maybeKeys[:min(len(r.maybeKeys), inlineMaybeKeys)] {
 		if candidate == key {
 			return true

@@ -18035,7 +18035,7 @@ func getConditionalTypeKey(typeArguments []*Type, alias *TypeAlias, forConstrain
 	return b.hash()
 }
 
-func getRelationKey(source *Type, target *Type, intersectionState IntersectionState, isIdentity bool, ignoreConstraints bool) (CacheHashKey, bool) {
+func getRelationKey(source *Type, target *Type, intersectionState IntersectionState, isIdentity bool, ignoreConstraints bool) (relationKey, bool) {
 	if isIdentity && source.id > target.id {
 		source, target = target, source
 	}
@@ -18044,14 +18044,20 @@ func getRelationKey(source *Type, target *Type, intersectionState IntersectionSt
 		b.writeByte('g')
 		constrained := b.writeGenericTypeReferences(source, target, ignoreConstraints)
 		b.writeUint32(uint32(intersectionState))
-		return b.hash(), constrained
+		return relationKey{hash: b.hash()}, constrained
+	}
+	// Two 31-bit type IDs and the two intersection-state bits fit exactly.
+	// Larger IDs or future state bits keep the original hashed representation.
+	if source.id < 1<<31 && target.id < 1<<31 && intersectionState < 4 {
+		packed := uint64(source.id)<<33 | uint64(target.id)<<2 | uint64(intersectionState)
+		return relationKey{hash: CacheHashKey{Lo: packed}, simple: true}, false
 	}
 	var bytes [13]byte
 	bytes[0] = 's'
 	binary.LittleEndian.PutUint32(bytes[1:], uint32(source.id))
 	binary.LittleEndian.PutUint32(bytes[5:], uint32(target.id))
 	binary.LittleEndian.PutUint32(bytes[9:], uint32(intersectionState))
-	return CacheHashKey(xxh3.Hash128(bytes[:])), false
+	return relationKey{hash: CacheHashKey(xxh3.Hash128(bytes[:]))}, false
 }
 
 func getNodeListKey(nodes []*ast.Node) CacheHashKey {
