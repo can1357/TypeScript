@@ -17,6 +17,29 @@ import (
 	"gotest.tools/v3/assert"
 )
 
+func TestTemplateLiteralUnionAlternatives(t *testing.T) {
+	t.Parallel()
+
+	fs := bundled.WrapFS(vfstest.FromMap(map[string]string{
+		"/main.ts": "type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;\n" +
+			"type Assert<T extends true> = T;\n" +
+			"type Product = `${'a' | 'b'}${1 | 2}`;\n" +
+			"type CheckProduct = Assert<Equal<Product, 'a1' | 'a2' | 'b1' | 'b2'>>;\n" +
+			"type Nested<T extends string> = `${'x' | 'y'}${`${T}${1 | 2}`}`;\n" +
+			"type CheckNested = Assert<Equal<Nested<'a' | 'b'>, 'xa1' | 'xa2' | 'xb1' | 'xb2' | 'ya1' | 'ya2' | 'yb1' | 'yb2'>>;\n" +
+			"type CheckPattern = Assert<Equal<Nested<string>, `x${string}1` | `x${string}2` | `y${string}1` | `y${string}2`>>;\n",
+		"/tsconfig.json": `{"compilerOptions": {"strict": true}, "files": ["main.ts"]}`,
+	}, tspath.CaseInsensitive))
+
+	parsed, errors := tsoptions.GetParsedCommandLineOfConfigFile("/tsconfig.json", &core.CompilerOptions{}, nil, fs, nil)
+	assert.Equal(t, len(errors), 0)
+	p := compiler.NewProgram(compiler.ProgramOptions{
+		Config: parsed,
+		Host:   compiler.NewCompilerHost(fs, bundled.LibPath(), nil, nil, nil),
+	})
+	assert.Equal(t, len(p.GetSemanticDiagnostics(t.Context(), nil)), 0)
+}
+
 func TestGetSymbolAtLocation(t *testing.T) {
 	t.Parallel()
 

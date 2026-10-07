@@ -20013,7 +20013,7 @@ func (c *Checker) addInheritedMembers(symbols ast.SymbolTable, baseSymbols []*as
 		if !isStaticPrivateIdentifierProperty(base) {
 			if s, ok := symbols[base.Name()]; !ok || s.Flags()&ast.SymbolFlagsValue == 0 {
 				if symbols == nil {
-					symbols = make(ast.SymbolTable)
+					symbols = make(ast.SymbolTable, len(baseSymbols))
 				}
 				symbols[base.Name()] = base
 			}
@@ -26113,19 +26113,23 @@ func (c *Checker) mapTypeEx(t *Type, f func(*Type) *Type, noReductions bool) *Ty
 	if u.origin != nil && u.origin.flags&TypeFlagsUnion != 0 {
 		types = u.origin.Types()
 	}
-	mappedTypes := make([]*Type, 0, 16)
+	// Allocate only after the first changed constituent. The resulting slice is
+	// exclusively owned here and can be passed to union construction directly.
+	var mappedTypes []*Type
 	var changed bool
-	for _, s := range types {
+	for i, s := range types {
 		var mapped *Type
 		if s.flags&TypeFlagsUnion != 0 {
 			mapped = c.mapTypeEx(s, f, noReductions)
 		} else {
 			mapped = f(s)
 		}
-		if mapped != s {
+		if !changed && mapped != s {
 			changed = true
+			mappedTypes = make([]*Type, i, len(types))
+			copy(mappedTypes, types[:i])
 		}
-		if mapped != nil {
+		if changed && mapped != nil {
 			mappedTypes = append(mappedTypes, mapped)
 		}
 	}
@@ -26133,7 +26137,7 @@ func (c *Checker) mapTypeEx(t *Type, f func(*Type) *Type, noReductions bool) *Ty
 		if len(mappedTypes) == 0 {
 			return nil
 		}
-		return c.getUnionTypeEx(slices.Clone(mappedTypes), core.IfElse(noReductions, UnionReductionNone, UnionReductionLiteral), nil /*alias*/, nil /*origin*/)
+		return c.getUnionTypeEx(mappedTypes, core.IfElse(noReductions, UnionReductionNone, UnionReductionLiteral), nil /*alias*/, nil /*origin*/)
 	}
 	return t
 }
@@ -29692,8 +29696,12 @@ func (c *Checker) getTemplateLiteralType(texts []string, types []*Type) *Type {
 		if !c.checkCrossProductUnion(types) {
 			return c.errorType
 		}
+		// Recursive calls consume the spans synchronously and construct their own
+		// normalized slices, so all alternatives can share this input copy.
+		spans := slices.Clone(types)
 		return c.mapType(types[unionIndex], func(t *Type) *Type {
-			return c.getTemplateLiteralType(texts, core.ReplaceElement(types, unionIndex, t))
+			spans[unionIndex] = t
+			return c.getTemplateLiteralType(texts, spans)
 		})
 	}
 	if slices.Contains(types, c.wildcardType) {
