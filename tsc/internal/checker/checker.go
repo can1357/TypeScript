@@ -589,6 +589,7 @@ type Checker struct {
 	files                                       []*ast.SourceFile
 	fileIndexMap                                map[*ast.SourceFile]int
 	symbolSortKeys                              []symbolSortKey
+	instantiatedPropertyOrders                  map[*Type][]*ast.Symbol
 	compareSymbols                              func(*ast.Symbol, *ast.Symbol) int
 	compareSymbolChains                         func([]*ast.Symbol, []*ast.Symbol) int
 	TypeCount                                   uint32
@@ -22660,6 +22661,53 @@ func (c *Checker) getNamedMembers(members ast.SymbolTable, container *ast.Symbol
 	return result
 }
 
+func (c *Checker) tryReusePropertyOrder(members ast.SymbolTable, properties []*ast.Symbol, partition bool) ([]*ast.Symbol, bool) {
+	if len(members) != len(properties) {
+		return nil, false
+	}
+	// Matching value declarations imply the same contained partition. Collect
+	// the validated members directly instead of hashing every name a second time.
+	result := make([]*ast.Symbol, len(properties))
+	for i, property := range properties {
+		symbol := members[property.Name()]
+		if symbol == nil || symbol.Name() != property.Name() || !c.isNamedMember(symbol, property.Name()) ||
+			(len(symbol.Declarations()) == 0) != (len(property.Declarations()) == 0) ||
+			core.FirstOrNil(symbol.Declarations()) != core.FirstOrNil(property.Declarations()) ||
+			partition && symbol.ValueDeclaration() != property.ValueDeclaration() {
+			return nil, false
+		}
+		result[i] = symbol
+	}
+	return result, true
+}
+
+func (c *Checker) getTypeReferenceProperties(t *Type, members ast.SymbolTable) []*ast.Symbol {
+	target := t.AsTypeReference().target
+	if t.symbol == target.symbol {
+		var properties []*ast.Symbol
+		if target.objectFlags&ObjectFlagsMembersResolved != 0 {
+			properties = target.AsStructuredType().properties
+		} else {
+			properties = c.instantiatedPropertyOrders[target]
+		}
+		partition := t.symbol != nil && t.symbol.Flags()&(ast.SymbolFlagsClass|ast.SymbolFlagsInterface) != 0
+		if result, ok := c.tryReusePropertyOrder(members, properties, partition); ok {
+			return result
+		}
+	}
+	result := c.getNamedMembers(members, t.symbol)
+	if target.objectFlags&ObjectFlagsMembersResolved == 0 && t.symbol == target.symbol {
+		// Do not force target resolution: that could introduce recursive resolution.
+		// The first sorted instantiation supplies an order, and every reuse validates
+		// that the chosen members still have the same names and declaration sort keys.
+		if c.instantiatedPropertyOrders == nil {
+			c.instantiatedPropertyOrders = make(map[*Type][]*ast.Symbol)
+		}
+		c.instantiatedPropertyOrders[target] = result
+	}
+	return result
+}
+
 func (c *Checker) isDeclarationContainedBy(symbol *ast.Symbol, container *ast.Symbol) bool {
 	if declaration := symbol.ValueDeclaration(); declaration != nil {
 		for _, d := range container.Declarations() {
@@ -25819,6 +25867,8 @@ func (c *Checker) setStructuredTypeMembers(t *Type, members ast.SymbolTable, cal
 		for i, property := range sourceProperties {
 			data.properties[i] = members[property.Name()]
 		}
+	} else if t.objectFlags&ObjectFlagsReference != 0 && t.AsTypeReference().target != nil && t.AsTypeReference().target != t {
+		data.properties = c.getTypeReferenceProperties(t, members)
 	} else {
 		data.properties = c.getNamedMembers(members, t.symbol)
 	}
