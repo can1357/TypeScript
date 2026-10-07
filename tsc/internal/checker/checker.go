@@ -17862,7 +17862,8 @@ func (b *keyBuilder) writeAlias(alias *TypeAlias) {
 
 func (b *keyBuilder) writeGenericTypeReferences(source *Type, target *Type, ignoreConstraints bool) bool {
 	var constrained bool
-	typeParameters := make([]*Type, 0, 8)
+	var inlineTypeParameters [8]*Type
+	typeParameters := inlineTypeParameters[:0]
 	var writeTypeReference func(*Type, int)
 	writeTypeReference = func(ref *Type, depth int) {
 		b.writeType(ref.Target())
@@ -18026,18 +18027,19 @@ func getRelationKey(source *Type, target *Type, intersectionState IntersectionSt
 	if isIdentity && source.id > target.id {
 		source, target = target, source
 	}
-	var b keyBuilder
-	var constrained bool
 	if isTypeReferenceWithGenericArguments(source) && isTypeReferenceWithGenericArguments(target) {
+		var b keyBuilder
 		b.writeByte('g')
-		constrained = b.writeGenericTypeReferences(source, target, ignoreConstraints)
-	} else {
-		b.writeByte('s')
-		b.writeType(source)
-		b.writeType(target)
+		constrained := b.writeGenericTypeReferences(source, target, ignoreConstraints)
+		b.writeUint32(uint32(intersectionState))
+		return b.hash(), constrained
 	}
-	b.writeUint32(uint32(intersectionState))
-	return b.hash(), constrained
+	var bytes [13]byte
+	bytes[0] = 's'
+	binary.LittleEndian.PutUint32(bytes[1:], uint32(source.id))
+	binary.LittleEndian.PutUint32(bytes[5:], uint32(target.id))
+	binary.LittleEndian.PutUint32(bytes[9:], uint32(intersectionState))
+	return CacheHashKey(xxh3.Hash128(bytes[:])), false
 }
 
 func getNodeListKey(nodes []*ast.Node) CacheHashKey {
@@ -18050,9 +18052,25 @@ func getNodeListKey(nodes []*ast.Node) CacheHashKey {
 }
 
 func isTypeReferenceWithGenericArguments(t *Type) bool {
-	return isNonDeferredTypeReference(t) && core.Some(t.checker.getTypeArguments(t), func(t *Type) bool {
-		return t.flags&TypeFlagsTypeParameter != 0 || isTypeReferenceWithGenericArguments(t)
-	})
+	if !isNonDeferredTypeReference(t) {
+		return false
+	}
+	if t.objectFlags&ObjectFlagsGenericArgumentsComputed != 0 {
+		return t.objectFlags&ObjectFlagsHasGenericArguments != 0
+	}
+	typeArguments := t.checker.getTypeArguments(t)
+	for _, argument := range typeArguments {
+		if argument.flags&TypeFlagsTypeParameter != 0 || isTypeReferenceWithGenericArguments(argument) {
+			t.objectFlags |= ObjectFlagsGenericArgumentsComputed | ObjectFlagsHasGenericArguments
+			return true
+		}
+	}
+	// A recursive resolution can return temporary arguments without storing them.
+	// Cache a negative answer only once the reference's arguments are resolved.
+	if t.AsTypeReference().resolvedTypeArguments != nil {
+		t.objectFlags |= ObjectFlagsGenericArgumentsComputed
+	}
+	return false
 }
 
 func isNonDeferredTypeReference(t *Type) bool {

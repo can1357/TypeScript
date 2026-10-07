@@ -642,6 +642,10 @@ const (
 	ObjectFlagsIdenticalBaseTypeCalculated = 1 << 27 // has had `getSingleBaseForNonAugmentingSubtype` invoked on it already
 	ObjectFlagsIdenticalBaseTypeExists     = 1 << 28 // has a defined cachedEquivalentBaseType member
 	ObjectFlagsFromTypeNode                = 1 << 29 // Originates in resolution of AST type node
+	ObjectFlagsGenericArgumentsComputed    = 1 << 30 // Generic type argument containment has been computed
+	ObjectFlagsHasGenericArguments         = 1 << 31 // Type arguments contain a type parameter or generic reference
+	// Memoization bits for relation keys, which ObjectFlags hides: they change as a side effect of relating types.
+	objectFlagsRelationKeyMemo = ObjectFlagsGenericArgumentsComputed | ObjectFlagsHasGenericArguments
 	// Flags that require TypeFlags.UnionOrIntersection or TypeFlags.Substitution
 	ObjectFlagsIsGenericTypeComputed = 1 << 22 // IsGenericObjectType flag has been computed
 	ObjectFlagsIsGenericObjectType   = 1 << 23 // Union or intersection contains generic object type
@@ -701,7 +705,7 @@ func (t *Type) Flags() TypeFlags {
 }
 
 func (t *Type) ObjectFlags() ObjectFlags {
-	return t.objectFlags
+	return t.objectFlags &^ objectFlagsRelationKeyMemo
 }
 
 // Casts for concrete struct types

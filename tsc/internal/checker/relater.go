@@ -214,6 +214,9 @@ func (c *Checker) isSimpleTypeRelatedTo(source *Type, target *Type, relation *Re
 	if t&TypeFlagsNever != 0 {
 		return false
 	}
+	if s&TypeFlagsObject != 0 && t&TypeFlagsObject != 0 {
+		return false
+	}
 	if s&TypeFlagsStringLike != 0 && t&TypeFlagsString != 0 {
 		return true
 	}
@@ -2606,7 +2609,7 @@ func (c *Checker) getRelater() *Relater {
 }
 
 func (c *Checker) putRelater(r *Relater) {
-	r.maybeKeysSet.Clear()
+	r.resetMaybeStack(0, RelationComparisonResultNone, false)
 	*r = Relater{
 		c:            c,
 		maybeKeys:    r.maybeKeys[:0],
@@ -2634,11 +2637,15 @@ func (r *Relater) isRelatedToEx(originalSource *Type, originalTarget *Type, recu
 	if originalSource == originalTarget {
 		return TernaryTrue
 	}
+	var errorReporter ErrorReporter
+	if reportErrors {
+		errorReporter = r.reportError
+	}
 	// Before normalization: if `source` is type an object type, and `target` is primitive,
 	// skip all the checks we don't need and just return `isSimpleTypeRelatedTo` result
 	if originalSource.flags&TypeFlagsObject != 0 && originalTarget.flags&TypeFlagsPrimitive != 0 {
 		if r.relation == r.c.comparableRelation && originalTarget.flags&TypeFlagsNever == 0 && r.c.isSimpleTypeRelatedTo(originalTarget, originalSource, r.relation, nil) ||
-			r.c.isSimpleTypeRelatedTo(originalSource, originalTarget, r.relation, core.IfElse(reportErrors, r.reportError, nil)) {
+			r.c.isSimpleTypeRelatedTo(originalSource, originalTarget, r.relation, errorReporter) {
 			return TernaryTrue
 		}
 		if reportErrors {
@@ -2692,7 +2699,7 @@ func (r *Relater) isRelatedToEx(originalSource *Type, originalTarget *Type, recu
 		}
 	}
 	if r.relation == r.c.comparableRelation && target.flags&TypeFlagsNever == 0 && r.c.isSimpleTypeRelatedTo(target, source, r.relation, nil) ||
-		r.c.isSimpleTypeRelatedTo(source, target, r.relation, core.IfElse(reportErrors, r.reportError, nil)) {
+		r.c.isSimpleTypeRelatedTo(source, target, r.relation, errorReporter) {
 		return TernaryTrue
 	}
 	if source.flags&TypeFlagsStructuredOrInstantiable != 0 || target.flags&TypeFlagsStructuredOrInstantiable != 0 {
@@ -3118,7 +3125,7 @@ func (r *Relater) recursiveTypeRelatedTo(source *Type, target *Type, reportError
 		return TernaryFalse
 	}
 	// If source and target are already being compared, consider them related with assumptions
-	if r.maybeKeysSet.Has(id) {
+	if r.hasMaybeKey(id) {
 		return TernaryMaybe
 	}
 	// A constrained key indicates that we have type references that reference constrained
@@ -3126,7 +3133,7 @@ func (r *Relater) recursiveTypeRelatedTo(source *Type, target *Type, reportError
 	// were unconstrained.
 	if constrained {
 		broadestEquivalentId, _ := getRelationKey(source, target, intersectionState, r.relation == r.c.identityRelation, true /*ignoreConstraints*/)
-		if r.maybeKeysSet.Has(broadestEquivalentId) {
+		if r.hasMaybeKey(broadestEquivalentId) {
 			return TernaryMaybe
 		}
 	}
@@ -3138,7 +3145,9 @@ func (r *Relater) recursiveTypeRelatedTo(source *Type, target *Type, reportError
 	}
 	maybeStart := len(r.maybeKeys)
 	r.maybeKeys = append(r.maybeKeys, id)
-	r.maybeKeysSet.Add(id)
+	if maybeStart >= inlineMaybeKeys {
+		r.maybeKeysSet.Add(id)
+	}
 	saveExpandingFlags := r.expandingFlags
 	if recursionFlags&RecursionFlagsSource != 0 {
 		r.sourceStack = append(r.sourceStack, source)
@@ -3198,9 +3207,24 @@ func (r *Relater) recursiveTypeRelatedTo(source *Type, target *Type, reportError
 	return result
 }
 
+// Keep shallow assumptions in the stack itself. Only the tail needs a set;
+// deleting that tail on unwind avoids clearing a large retained map per call.
+const inlineMaybeKeys = 8
+
+func (r *Relater) hasMaybeKey(key CacheHashKey) bool {
+	for _, candidate := range r.maybeKeys[:min(len(r.maybeKeys), inlineMaybeKeys)] {
+		if candidate == key {
+			return true
+		}
+	}
+	return len(r.maybeKeys) > inlineMaybeKeys && r.maybeKeysSet.Has(key)
+}
+
 func (r *Relater) resetMaybeStack(maybeStart int, propagatingVarianceFlags RelationComparisonResult, markAllAsSucceeded bool) {
 	for i := maybeStart; i < len(r.maybeKeys); i++ {
-		r.maybeKeysSet.Delete(r.maybeKeys[i])
+		if i >= inlineMaybeKeys {
+			r.maybeKeysSet.Delete(r.maybeKeys[i])
+		}
 		if markAllAsSucceeded {
 			r.relation.set(r.maybeKeys[i], RelationComparisonResultSucceeded|propagatingVarianceFlags)
 			r.relationCount--
