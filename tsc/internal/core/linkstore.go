@@ -39,13 +39,24 @@ const (
 	LinkPageMask  = LinkPageSize - 1
 )
 
+// For values whose size is a multiple of eight bytes, value blocks occupy exact multiples of the runtime's
+// 8KB heap pages, avoiding unused size-class padding.
+const (
+	linkBlockShift = 10
+	linkBlockSize  = 1 << linkBlockShift
+	linkBlockMask  = linkBlockSize - 1
+)
+
 // PagedLinkStore implements a sparse-array-like structure for storing elements keyed by dense uint64 keys.
-// Elements are allocated in an area, element references are stored in fixed-size pages of 256 entries, and
-// an index of pages is maintained in a growable list.
+// Elements are allocated in stable blocks of 1024 entries, element references are stored in fixed-size pages
+// of 256 entries, and an index of pages is maintained in a growable list. Pages contain one-based offsets of
+// elements rather than pointers, halving their size and excluding them from GC pointer scanning. An entry
+// is present only once Get has been called for its key.
 
 type PagedLinkStore[V any] struct {
-	pages []*[LinkPageSize]*V
-	arena Arena[V]
+	pages  []*[LinkPageSize]uint32
+	blocks []*[linkBlockSize]V
+	count  uint32
 }
 
 func (s *PagedLinkStore[V]) Get(key uint64) *V {
@@ -56,27 +67,53 @@ func (s *PagedLinkStore[V]) Get(key uint64) *V {
 	}
 	page := s.pages[pageIndex]
 	if page == nil {
-		page = new([LinkPageSize]*V)
+		page = new([LinkPageSize]uint32)
 		s.pages[pageIndex] = page
 	}
-	link := page[key&LinkPageMask]
-	if link == nil {
-		link = s.arena.New()
-		page[key&LinkPageMask] = link
+	link := &page[key&LinkPageMask]
+	if *link == 0 {
+		return s.allocate(link)
 	}
-	return link
+	return s.at(*link)
+}
+
+func (s *PagedLinkStore[V]) allocate(link *uint32) *V {
+	if s.count == ^uint32(0) {
+		panic("PagedLinkStore exceeds 4294967295 live entries")
+	}
+	index := s.count
+	if index&linkBlockMask == 0 {
+		s.blocks = append(s.blocks, new([linkBlockSize]V))
+	}
+	s.count++
+	*link = s.count
+	return &s.blocks[index>>linkBlockShift][index&linkBlockMask]
+}
+
+// at returns the element at the given one-based offset.
+func (s *PagedLinkStore[V]) at(offset uint32) *V {
+	index := offset - 1
+	return &s.blocks[index>>linkBlockShift][index&linkBlockMask]
 }
 
 func (s *PagedLinkStore[V]) Has(key uint64) bool {
-	return s.TryGet(key) != nil
+	return s.offset(key) != 0
 }
 
 func (s *PagedLinkStore[V]) TryGet(key uint64) *V {
+	if offset := s.offset(key); offset != 0 {
+		return s.at(offset)
+	}
+	return nil
+}
+
+// offset returns the one-based offset of the element for key, or 0 if there is none.
+func (s *PagedLinkStore[V]) offset(key uint64) uint32 {
 	pageIndex := key >> LinkPageShift
 	if int(pageIndex) < len(s.pages) {
 		if page := s.pages[pageIndex]; page != nil {
 			return page[key&LinkPageMask]
 		}
 	}
-	return nil
+	return 0
 }
