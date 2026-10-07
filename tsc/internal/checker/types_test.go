@@ -350,8 +350,10 @@ func TestIntersectionReductionReentrancy(t *testing.T) {
 	c, _ := newCompositeTestChecker()
 	property := c.newSymbol(ast.SymbolFlagsProperty, "value")
 	object := c.newAnonymousType(nil, ast.SymbolTable{"value": property}, nil, nil, nil)
-	inner := c.newIntersectionType(ObjectFlagsNone, []*Type{object, object})
-	outer := c.newIntersectionType(ObjectFlagsNone, []*Type{inner, object})
+	// Intersections of up to four constituents probe member tables instead of
+	// counting, so use five to exercise nested borrowing of the counting maps.
+	inner := c.newIntersectionType(ObjectFlagsNone, []*Type{object, object, object, object, object})
+	outer := c.newIntersectionType(ObjectFlagsNone, []*Type{inner, object, object, object, object})
 	assert.Equal(t, c.getReducedType(outer), outer)
 	assert.Equal(t, c.getReducedType(inner), inner)
 	assert.Equal(t, c.getPropertyOfUnionOrIntersectionType(outer, "value", true), property)
