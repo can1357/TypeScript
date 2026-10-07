@@ -588,6 +588,7 @@ type Checker struct {
 	compilerOptions                             *core.CompilerOptions
 	files                                       []*ast.SourceFile
 	fileIndexMap                                map[*ast.SourceFile]int
+	symbolSortKeys                              []symbolSortKey
 	compareSymbols                              func(*ast.Symbol, *ast.Symbol) int
 	compareSymbolChains                         func([]*ast.Symbol, []*ast.Symbol) int
 	TypeCount                                   uint32
@@ -22610,21 +22611,24 @@ func (c *Checker) getNamedMembers(members ast.SymbolTable, container *ast.Symbol
 	// For classes and interfaces, we store explicitly declared members ahead of inherited members. This ensures we process
 	// explicitly declared members first in type relations, which is beneficial because explicitly declared members are more
 	// likely to contain discriminating differences. See for example https://github.com/microsoft/TypeScript/tsc/issues/1968.
-	result := make([]*ast.Symbol, 0, len(members))
-	var containedCount int
-	if container != nil && container.Flags()&(ast.SymbolFlagsClass|ast.SymbolFlagsInterface) != 0 {
-		for id, symbol := range members {
-			if c.isNamedMember(symbol, id) && c.isDeclarationContainedBy(symbol, container) {
-				result = append(result, symbol)
+	result := make([]*ast.Symbol, len(members))
+	var containedCount, inheritedCount int
+	partition := container != nil && container.Flags()&(ast.SymbolFlagsClass|ast.SymbolFlagsInterface) != 0
+	for id, symbol := range members {
+		if c.isNamedMember(symbol, id) {
+			if partition && c.isDeclarationContainedBy(symbol, container) {
+				result[containedCount] = symbol
+				containedCount++
+			} else {
+				inheritedCount++
+				result[len(result)-inheritedCount] = symbol
 			}
 		}
-		containedCount = len(result)
 	}
-	for id, symbol := range members {
-		if c.isNamedMember(symbol, id) && (container == nil || container.Flags()&(ast.SymbolFlagsClass|ast.SymbolFlagsInterface) == 0 || !c.isDeclarationContainedBy(symbol, container)) {
-			result = append(result, symbol)
-		}
-	}
+	// Gather both partitions in one table traversal, then close any gap left by
+	// reserved or non-value members before sorting the partitions independently.
+	copy(result[containedCount:], result[len(result)-inheritedCount:])
+	result = result[:containedCount+inheritedCount]
 	c.sortSymbols(result[:containedCount])
 	c.sortSymbols(result[containedCount:])
 	return result
@@ -25778,7 +25782,20 @@ func (c *Checker) setStructuredTypeMembers(t *Type, members ast.SymbolTable, cal
 	t.objectFlags |= ObjectFlagsMembersResolved
 	data := t.AsStructuredType()
 	data.members = members
-	data.properties = c.getNamedMembers(members, t.symbol)
+	if len(members) == 0 {
+		data.properties = nil
+	} else if t.objectFlags&(ObjectFlagsAnonymous|ObjectFlagsReverseMapped) == ObjectFlagsAnonymous && t.AsObjectType().target != nil {
+		// Anonymous instantiations copy only the target's named members. Instantiation
+		// preserves names, declarations, and value declarations, so both the comparison
+		// order and the class/interface contained-vs-inherited partition are unchanged.
+		sourceProperties := t.AsObjectType().target.AsStructuredType().properties
+		data.properties = make([]*ast.Symbol, len(sourceProperties))
+		for i, property := range sourceProperties {
+			data.properties[i] = members[property.Name()]
+		}
+	} else {
+		data.properties = c.getNamedMembers(members, t.symbol)
+	}
 	if len(callSignatures) != 0 {
 		if len(constructSignatures) != 0 {
 			data.signatures = core.Concatenate(callSignatures, constructSignatures)

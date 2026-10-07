@@ -358,8 +358,64 @@ func createSymbolTable(symbols []*ast.Symbol) ast.SymbolTable {
 	return result
 }
 
+type symbolSortKey struct {
+	symbol    *ast.Symbol
+	file      *ast.SourceFile
+	fileIndex int
+}
+
 func (c *Checker) sortSymbols(symbols []*ast.Symbol) {
-	slices.SortFunc(symbols, c.compareSymbols)
+	if len(symbols) < 2 {
+		return
+	}
+	if len(symbols) == 2 {
+		if c.compareSymbols(symbols[0], symbols[1]) > 0 {
+			symbols[0], symbols[1] = symbols[1], symbols[0]
+		}
+		return
+	}
+	// This comparator cannot re-enter the checker, so all sorts can share scratch
+	// storage. Resolve each declaration's source file once, not per comparison.
+	if cap(c.symbolSortKeys) < len(symbols) {
+		c.symbolSortKeys = make([]symbolSortKey, len(symbols))
+	}
+	keys := c.symbolSortKeys[:len(symbols)]
+	for i, symbol := range symbols {
+		key := symbolSortKey{symbol: symbol}
+		if symbol != nil && len(symbol.Declarations()) != 0 && symbol.Declarations()[0] != nil {
+			key.file = ast.GetSourceFileOfNode(symbol.Declarations()[0])
+			key.fileIndex = c.fileIndexMap[key.file]
+		}
+		keys[i] = key
+	}
+	slices.SortFunc(keys, func(k1, k2 symbolSortKey) int {
+		s1, s2 := k1.symbol, k2.symbol
+		if s1 == s2 {
+			return 0
+		}
+		if s1 == nil || s2 == nil || len(s1.Declarations()) == 0 || len(s2.Declarations()) == 0 ||
+			s1.Declarations()[0] == nil || s2.Declarations()[0] == nil {
+			return c.compareSymbolsWorker(s1, s2)
+		}
+		var r int
+		if k1.file != k2.file {
+			r = k1.fileIndex - k2.fileIndex
+		} else {
+			r = s1.Declarations()[0].Pos() - s2.Declarations()[0].Pos()
+		}
+		if r != 0 {
+			return r
+		}
+		if r := strings.Compare(s1.Name(), s2.Name()); r != 0 {
+			return r
+		}
+		return int(ast.GetSymbolId(s1)) - int(ast.GetSymbolId(s2))
+	})
+	for i, key := range keys {
+		symbols[i] = key.symbol
+	}
+	clear(keys)
+	c.symbolSortKeys = keys[:0]
 }
 
 func (c *Checker) compareSymbolsWorker(s1, s2 *ast.Symbol) int {
