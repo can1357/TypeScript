@@ -31,6 +31,33 @@ func (s *LinkStore[K, V]) TryGet(key K) *V {
 	return s.entries[key]
 }
 
+// PagedArenaLinkStore indexes arena-allocated values by dense IDs. Unlike a
+// PagedLinkStore, allocating a page does not make its other entries present.
+// Pointer pages keep sparse stores from allocating an entire page of large values.
+type PagedArenaLinkStore[V any] struct {
+	store PagedLinkStore[*V]
+	arena Arena[V]
+}
+
+func (s *PagedArenaLinkStore[V]) Get(key uint64) *V {
+	link := s.store.Get(key)
+	if *link == nil {
+		*link = s.arena.New()
+	}
+	return *link
+}
+
+func (s *PagedArenaLinkStore[V]) Has(key uint64) bool {
+	return s.TryGet(key) != nil
+}
+
+func (s *PagedArenaLinkStore[V]) TryGet(key uint64) *V {
+	if link := s.store.TryGet(key); link != nil {
+		return *link
+	}
+	return nil
+}
+
 const (
 	pageShift    = 8
 	pageSize     = 1 << pageShift
