@@ -29850,9 +29850,17 @@ const (
 )
 
 func (c *Checker) getTemplateLiteralType(texts []string, types []*Type) *Type {
-	unionIndex := core.FindIndex(types, func(t *Type) bool {
-		return t.flags&(TypeFlagsNever|TypeFlagsUnion) != 0
-	})
+	unionIndex := -1
+	normalizedSpans := len(types) != 0
+	for i, t := range types {
+		if t.flags&(TypeFlagsNever|TypeFlagsUnion) != 0 {
+			unionIndex = i
+			break
+		}
+		if t.flags&(TypeFlagsLiteral|TypeFlagsNullable|TypeFlagsTemplateLiteral) != 0 {
+			normalizedSpans = false
+		}
+	}
 	if unionIndex >= 0 {
 		if !c.checkCrossProductUnion(types) {
 			return c.errorType
@@ -29867,6 +29875,16 @@ func (c *Checker) getTemplateLiteralType(texts []string, types []*Type) *Type {
 	}
 	if slices.Contains(types, c.wildcardType) {
 		return c.wildcardType
+	}
+	var key CacheHashKey
+	if normalizedSpans {
+		// Without literals or nested templates, normalization preserves every span.
+		// A canonical-key hit also proves the texts were normalized and passed the
+		// size limits already, so skip rebuilding the same texts and span lists.
+		key = getTemplateTypeKey(texts, types)
+		if cached := c.templateLiteralTypes[key]; cached != nil {
+			return cached
+		}
 	}
 	// Most normalized templates have only a few placeholders. Keep temporary
 	// spans local; only a newly cached template needs independently owned slices.
@@ -29927,7 +29945,9 @@ func (c *Checker) getTemplateLiteralType(texts []string, types []*Type) *Type {
 			return newTypes[0]
 		}
 	}
-	key := getTemplateTypeKey(newTexts, newTypes)
+	if !normalizedSpans || !slices.Equal(texts, newTexts) {
+		key = getTemplateTypeKey(newTexts, newTypes)
+	}
 	t := c.templateLiteralTypes[key]
 	if t == nil {
 		t = c.newTemplateLiteralType(slices.Clone(newTexts), slices.Clone(newTypes))
