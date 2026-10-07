@@ -19387,14 +19387,7 @@ func (c *Checker) getPropertyOfTypeEx(t *Type, name string, skipObjectFunctionPr
 		}
 		return c.getPropertyOfObjectType(c.globalObjectType, name)
 	case t.flags&TypeFlagsIntersection != 0:
-		prop := c.getPropertyOfUnionOrIntersectionType(t, name, true /*skipObjectFunctionPropertyAugment*/)
-		if prop != nil {
-			return prop
-		}
-		if !skipObjectFunctionPropertyAugment {
-			return c.getPropertyOfUnionOrIntersectionType(t, name, skipObjectFunctionPropertyAugment)
-		}
-		return nil
+		return c.getUnionOrIntersectionPropertyWorker(t, name, true /*skipObjectFunctionPropertyAugment*/, !skipObjectFunctionPropertyAugment /*tryAugmented*/)
 	case t.flags&TypeFlagsUnion != 0:
 		return c.getPropertyOfUnionOrIntersectionType(t, name, skipObjectFunctionPropertyAugment)
 	}
@@ -21885,27 +21878,46 @@ func (c *Checker) getPropertyOfUnionOrIntersectionType(t *Type, name string, ski
 // these partial properties when identifying discriminant properties, but otherwise they are filtered out
 // and do not appear to be present in the union type.
 func (c *Checker) getUnionOrIntersectionProperty(t *Type, name string, skipObjectFunctionPropertyAugment bool) *ast.Symbol {
-	var cache ast.SymbolTable
-	if skipObjectFunctionPropertyAugment {
-		cache = ast.GetSymbolTable(&t.AsUnionOrIntersectionType().propertyCacheWithoutFunctionPropertyAugment)
-	} else {
-		cache = ast.GetSymbolTable(&t.AsUnionOrIntersectionType().propertyCache)
-	}
-	if prop := cache[name]; prop != nil {
-		return prop
-	}
-	prop := c.createUnionOrIntersectionProperty(t, name, skipObjectFunctionPropertyAugment)
-	if prop != nil {
-		cache[name] = prop
-		// Propagate an entry from the non-augmented cache to the augmented cache unless the property is partial.
-		if skipObjectFunctionPropertyAugment && prop.CheckFlags()&ast.CheckFlagsPartial == 0 {
-			augmentedCache := ast.GetSymbolTable(&t.AsUnionOrIntersectionType().propertyCache)
-			if augmentedCache[name] == nil {
-				augmentedCache[name] = prop
-			}
+	return c.getUnionOrIntersectionPropertyWorker(t, name, skipObjectFunctionPropertyAugment, false /*tryAugmented*/)
+}
+
+func (c *Checker) getUnionOrIntersectionPropertyWorker(t *Type, name string, skipObjectFunctionPropertyAugment bool, tryAugmented bool) *ast.Symbol {
+	d := t.AsUnionOrIntersectionType()
+	entry := d.propertyCache[name]
+	for {
+		prop := entry.property
+		if skipObjectFunctionPropertyAugment {
+			prop = entry.propertyWithoutFunctionPropertyAugment
 		}
+		if prop != nil {
+			return prop
+		}
+		prop = c.createUnionOrIntersectionProperty(t, name, skipObjectFunctionPropertyAugment)
+		if prop != nil {
+			// Creation can recursively populate the other half of this entry.
+			entry = d.propertyCache[name]
+			if skipObjectFunctionPropertyAugment {
+				entry.propertyWithoutFunctionPropertyAugment = prop
+				// A non-partial non-augmented property is also valid with augmentation.
+				if prop.CheckFlags()&ast.CheckFlagsPartial == 0 && entry.property == nil {
+					entry.property = prop
+				}
+			} else {
+				entry.property = prop
+			}
+			if d.propertyCache == nil {
+				d.propertyCache = make(map[string]unionOrIntersectionPropertyCacheEntry)
+			}
+			d.propertyCache[name] = entry
+			return prop
+		}
+		// Absence is not cached: recursive member or constraint resolution can expose incomplete types.
+		if !tryAugmented || !skipObjectFunctionPropertyAugment {
+			return nil
+		}
+		entry = d.propertyCache[name]
+		skipObjectFunctionPropertyAugment = false
 	}
-	return prop
 }
 
 func (c *Checker) createUnionOrIntersectionProperty(containingType *Type, name string, skipObjectFunctionPropertyAugment bool) *ast.Symbol {
@@ -22062,9 +22074,6 @@ func (c *Checker) createUnionOrIntersectionProperty(containingType *Type, name s
 		links.setWriteType(c, c.getWriteTypeOfSymbol(singleProp))
 		return clone
 	}
-	if propSet.Size() == 0 {
-		propSet.Add(singleProp)
-	}
 	var declarations []*ast.Node
 	var firstType *Type
 	var nameType *Type
@@ -22072,7 +22081,7 @@ func (c *Checker) createUnionOrIntersectionProperty(containingType *Type, name s
 	var writeTypes []*Type
 	var firstValueDeclaration *ast.Node
 	var hasNonUniformValueDeclaration bool
-	for prop := range propSet.Values() {
+	addProperty := func(prop *ast.Symbol) {
 		if firstValueDeclaration == nil {
 			firstValueDeclaration = prop.ValueDeclaration()
 		} else if prop.ValueDeclaration() != nil && prop.ValueDeclaration() != firstValueDeclaration {
@@ -22103,6 +22112,13 @@ func (c *Checker) createUnionOrIntersectionProperty(containingType *Type, name s
 			checkFlags |= ast.CheckFlagsHasNeverType
 		}
 		propTypes = append(propTypes, t)
+	}
+	if propSet.Size() == 0 {
+		addProperty(singleProp)
+	} else {
+		for prop := range propSet.Values() {
+			addProperty(prop)
+		}
 	}
 	propTypes = append(propTypes, indexTypes...)
 	result := c.newSymbolEx(propFlags|optionalFlag, name, checkFlags|syntheticFlag)
@@ -22207,6 +22223,9 @@ func (c *Checker) isMappedTypeGenericIndexedAccess(t *Type) bool {
  * type itself.
  */
 func (c *Checker) getApparentType(t *Type) *Type {
+	if t.flags&TypeFlagsObject != 0 && t.objectFlags&ObjectFlagsMapped == 0 {
+		return t
+	}
 	originalType := t
 	if t.flags&TypeFlagsInstantiable != 0 {
 		t = c.getBaseConstraintOfType(t)
@@ -22377,7 +22396,14 @@ func (c *Checker) getReducedApparentType(t *Type) *Type {
 	// type reduction both before and after obtaining the apparent type. For example, given a type parameter
 	// 'T extends A | B', the type 'T & X' becomes 'A & X | B & X' after obtaining the apparent type, and
 	// that type may need further reduction to remove empty intersections.
-	return c.getReducedType(c.getApparentType(c.getReducedType(t)))
+	if t.flags&TypeFlagsUnionOrIntersection != 0 {
+		t = c.getReducedType(t)
+	}
+	apparent := c.getApparentType(t)
+	if apparent != t && apparent.flags&TypeFlagsUnionOrIntersection != 0 {
+		return c.getReducedType(apparent)
+	}
+	return apparent
 }
 
 func (c *Checker) elaborateNeverIntersection(chain *ast.Diagnostic, node *ast.Node, t *Type) *ast.Diagnostic {
