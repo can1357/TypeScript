@@ -260,7 +260,13 @@ func getCheckerAssociationOrder(fileWeights []int, isDeclarationFile []bool, pri
 	return fileOrder
 }
 
-func getCheckerAssociationBaseWeight(nodeCount int, textLength int) int {
+// Skipped files still participate in import affinity, but are not semantic roots.
+// Their demand-driven work belongs to the checked files that reference them.
+// Keep a positive weight so even an entirely skipped program has a valid load cap.
+func getCheckerAssociationBaseWeight(nodeCount int, textLength int, skipTypeChecking bool) int {
+	if skipTypeChecking {
+		return 1
+	}
 	return max(nodeCount+textLength/checkerAssociationTextWeightDivisor, 1)
 }
 
@@ -278,7 +284,8 @@ func shouldPrioritizeSourceFiles(totalWeight int, declarationWeight int, checker
 }
 
 // getCheckerAssociationWeights combines local syntax work with syntactic import
-// fanout. One import unit is totalBaseWeight / totalImports, so imports collectively
+// fanout from checked roots; skipped files contribute no import work. One import
+// unit is totalBaseWeight / totalImports, so imports collectively
 // contribute approximately the same vertex weight as syntax. Syntactic imports are
 // deliberately broader than getImportAdjacency's resolved, in-program edges: this
 // term estimates the work of processing module references, while adjacency controls
@@ -388,13 +395,16 @@ func (p *checkerPool) createCheckers() {
 			totalBaseWeight := 0
 			declarationBaseWeight := 0
 			for i, file := range p.program.files {
-				baseWeight := getCheckerAssociationBaseWeight(file.NodeCount, len(file.Text()))
+				skipTypeChecking := p.program.SkipTypeChecking(file, false)
+				baseWeight := getCheckerAssociationBaseWeight(file.NodeCount, len(file.Text()), skipTypeChecking)
 				totalBaseWeight += baseWeight
 				if file.IsDeclarationFile {
 					declarationBaseWeight += baseWeight
 				}
 				baseWeights[i] = baseWeight
-				importCounts[i] = len(file.Imports())
+				if !skipTypeChecking {
+					importCounts[i] = len(file.Imports())
+				}
 				isDeclarationFile[i] = file.IsDeclarationFile
 			}
 			policy := getCheckerAssociationPolicy(totalBaseWeight, declarationBaseWeight, checkerCount)
