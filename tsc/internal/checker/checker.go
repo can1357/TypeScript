@@ -1549,7 +1549,16 @@ func (c *Checker) createNameResolverForSuggestion() *binder.NameResolver {
 }
 
 func (c *Checker) symbolReferenced(symbol *ast.Symbol, meaning ast.SymbolFlags) {
-	c.symbolReferenceLinks.Get(symbol).referenceKinds |= meaning
+	if meaning != 0 {
+		c.symbolReferenceLinks.Get(symbol).referenceKinds |= meaning
+	}
+}
+
+func (c *Checker) getSymbolReferenceKinds(symbol *ast.Symbol) ast.SymbolFlags {
+	if links := c.symbolReferenceLinks.TryGet(symbol); links != nil {
+		return links.referenceKinds
+	}
+	return 0
 }
 
 func (c *Checker) getRequiresScopeChangeCache(node *ast.Node) core.Tristate {
@@ -7281,7 +7290,7 @@ func (c *Checker) checkUnusedIdentifiers(potentiallyUnusedIdentifiers []*ast.Nod
 }
 
 func (c *Checker) isReferenced(symbol *ast.Symbol) bool {
-	return c.symbolReferenceLinks.Get(symbol).referenceKinds != 0
+	return c.getSymbolReferenceKinds(symbol) != 0
 }
 
 type UnusedKind int32
@@ -7351,7 +7360,7 @@ func (c *Checker) checkUnusedLocalsAndParameters(node *ast.Node) {
 	var variableParents collections.Set[*ast.Node]
 	var importClauses map[*ast.Node][]*ast.Node
 	for _, local := range node.Locals() {
-		referenceKinds := c.symbolReferenceLinks.Get(local).referenceKinds
+		referenceKinds := c.getSymbolReferenceKinds(local)
 		if local.Flags()&ast.SymbolFlagsTypeParameter != 0 && (local.Flags()&ast.SymbolFlagsVariable == 0 || referenceKinds&ast.SymbolFlagsVariable != 0) ||
 			local.Flags()&ast.SymbolFlagsTypeParameter == 0 && (referenceKinds != 0 || local.ExportSymbol() != nil ||
 				local.Flags()&ast.SymbolFlagsModuleExports != 0) {
@@ -7436,7 +7445,7 @@ func (c *Checker) isUnreferencedVariableDeclaration(node *ast.Node) bool {
 	if ast.IsBindingPattern(name) {
 		return core.Every(node.Name().Elements(), c.isUnreferencedVariableDeclaration)
 	}
-	if c.symbolReferenceLinks.Get(c.getSymbolOfDeclaration(node)).referenceKinds&ast.SymbolFlagsVariable != 0 {
+	if c.getSymbolReferenceKinds(c.getSymbolOfDeclaration(node))&ast.SymbolFlagsVariable != 0 {
 		return false
 	}
 	if ast.IsBindingElement(node) && ast.IsObjectBindingPattern(node.Parent) {
@@ -7518,12 +7527,12 @@ func (c *Checker) checkUnusedTypeParameters(node *ast.Node) {
 }
 
 func (c *Checker) isUnreferencedTypeParameter(typeParameter *ast.Node) bool {
-	return c.symbolReferenceLinks.Get(c.getMergedSymbol(typeParameter.Symbol())).referenceKinds&ast.SymbolFlagsTypeParameter == 0 && !isIdentifierThatStartsWithUnderscore(typeParameter.Name())
+	return c.getSymbolReferenceKinds(c.getMergedSymbol(typeParameter.Symbol()))&ast.SymbolFlagsTypeParameter == 0 && !isIdentifierThatStartsWithUnderscore(typeParameter.Name())
 }
 
 func (c *Checker) checkUnusedRenamedBindingElements() {
 	for _, node := range c.renamedBindingElementsInTypes {
-		if c.symbolReferenceLinks.Get(c.getSymbolOfDeclaration(node)).referenceKinds == 0 {
+		if c.getSymbolReferenceKinds(c.getSymbolOfDeclaration(node)) == 0 {
 			wrappingDeclaration := ast.WalkUpBindingElementsAndPatterns(node)
 			debug.Assert(ast.IsPartOfParameterDeclaration(wrappingDeclaration), "Only parameter declaration should be checked here")
 			diagnostic := NewDiagnosticForNode(node.Name(), diagnostics.X_0_is_an_unused_renaming_of_1_Did_you_intend_to_use_it_as_a_type_annotation, scanner.DeclarationNameToString(node.Name()), scanner.DeclarationNameToString(node.PropertyName()))
@@ -13741,7 +13750,7 @@ func (c *Checker) getSpreadType(left *Type, right *Type, symbol *ast.Symbol, obj
 				c.spreadLinks.Get(result).leftSpread = leftProp
 				c.spreadLinks.Get(result).rightSpread = rightProp
 				result.SetDeclarations(declarations)
-				links.nameType = c.valueSymbolLinks.Get(leftProp).nameType
+				links.nameType = c.getNameTypeOfSymbol(leftProp)
 				members[leftProp.Name()] = result
 			}
 		} else {
@@ -13828,7 +13837,7 @@ func (c *Checker) tryMergeUnionOfObjectTypeAndEmptyObject(t *Type, readonly bool
 				links.resolvedType = c.addOptionalityEx(c.getTypeOfSymbol(prop), true /*isProperty*/, true /*isOptional*/)
 			}
 			result.SetDeclarations(prop.Declarations())
-			links.nameType = c.valueSymbolLinks.Get(prop).nameType
+			links.nameType = c.getNameTypeOfSymbol(prop)
 			c.mappedSymbolLinks.Get(result).syntheticOrigin = prop
 			members[prop.Name()] = result
 		}
@@ -13858,7 +13867,7 @@ func (c *Checker) getSpreadSymbol(prop *ast.Symbol, readonly bool) *ast.Symbol {
 		links.resolvedType = c.getTypeOfSymbol(prop)
 	}
 	result.SetDeclarations(prop.Declarations())
-	links.nameType = c.valueSymbolLinks.Get(prop).nameType
+	links.nameType = c.getNameTypeOfSymbol(prop)
 	c.mappedSymbolLinks.Get(result).syntheticOrigin = prop
 	return result
 }
@@ -21216,17 +21225,25 @@ func (c *Checker) instantiateSymbolTable(symbols ast.SymbolTable, m *TypeMapper)
 	return result
 }
 
+func (c *Checker) getNameTypeOfSymbol(symbol *ast.Symbol) *Type {
+	if links := c.valueSymbolLinks.TryGet(symbol); links != nil {
+		return links.nameType
+	}
+	return nil
+}
+
 func (c *Checker) instantiateSymbol(symbol *ast.Symbol, m *TypeMapper) *ast.Symbol {
 	if symbol == nil {
 		return nil
 	}
-	links := c.valueSymbolLinks.Get(symbol)
 	if m != nil && m.MapsThisOnly() && isThisless(symbol) {
 		return symbol
 	}
+	// Reading the source symbol must not allocate an otherwise empty links entry.
+	links := c.valueSymbolLinks.TryGet(symbol)
 	// If the type of the symbol is already resolved, and if that type could not possibly
 	// be affected by instantiation, simply return the symbol itself.
-	if links.resolvedType != nil && !c.couldContainTypeVariables(links.resolvedType) {
+	if links != nil && links.resolvedType != nil && !c.couldContainTypeVariables(links.resolvedType) {
 		if symbol.Flags()&ast.SymbolFlagsSetAccessor == 0 {
 			return symbol
 		}
@@ -21248,7 +21265,9 @@ func (c *Checker) instantiateSymbol(symbol *ast.Symbol, m *TypeMapper) *ast.Symb
 	resultLinks := c.valueSymbolLinks.Get(result)
 	resultLinks.target = symbol
 	resultLinks.mapper = m
-	resultLinks.nameType = links.nameType
+	if links != nil {
+		resultLinks.nameType = links.nameType
+	}
 	return result
 }
 
@@ -22214,7 +22233,7 @@ func (c *Checker) createSymbolWithType(source *ast.Symbol, t *Type) *ast.Symbol 
 	links := c.valueSymbolLinks.Get(symbol)
 	links.resolvedType = t
 	links.target = source
-	links.nameType = c.valueSymbolLinks.Get(source).nameType
+	links.nameType = c.getNameTypeOfSymbol(source)
 	return symbol
 }
 
@@ -27628,7 +27647,7 @@ func (c *Checker) getLiteralTypeFromProperties(t *Type, include TypeFlags, inclu
 
 func (c *Checker) getLiteralTypeFromProperty(prop *ast.Symbol, include TypeFlags, includeNonPublic bool) *Type {
 	if includeNonPublic || getDeclarationModifierFlagsFromSymbol(prop)&ast.ModifierFlagsNonPublicAccessibilityModifier == 0 {
-		t := c.valueSymbolLinks.Get(c.getLateBoundSymbol(prop)).nameType
+		t := c.getNameTypeOfSymbol(c.getLateBoundSymbol(prop))
 		if t == nil {
 			if prop.Name() == ast.InternalSymbolNameDefault {
 				t = c.getStringLiteralType("default")
@@ -30860,7 +30879,7 @@ func (c *Checker) getContextualTypeForObjectLiteralElement(element *ast.Node, co
 			// in the type. It will just be "__computed", which does not appear in any
 			// SymbolTable.
 			symbol := c.getSymbolOfDeclaration(element)
-			return c.getTypeOfPropertyOfContextualTypeEx(t, symbol.Name(), c.valueSymbolLinks.Get(symbol).nameType)
+			return c.getTypeOfPropertyOfContextualTypeEx(t, symbol.Name(), c.getNameTypeOfSymbol(symbol))
 		}
 		if ast.HasDynamicName(element) {
 			name := ast.GetNameOfDeclaration(element)
