@@ -30,8 +30,25 @@ func TestGetSourceFileForResolvedModuleUsesResolvedPath(t *testing.T) {
 
 func TestGetCheckerAssociationBaseWeight(t *testing.T) {
 	t.Parallel()
-	if got := getCheckerAssociationBaseWeight(100, 2500); got != 125 {
-		t.Fatalf("getCheckerAssociationBaseWeight() = %d, want 125", got)
+	tests := []struct {
+		name             string
+		nodeCount        int
+		textLength       int
+		skipTypeChecking bool
+		want             int
+	}{
+		{name: "checked syntax and text", nodeCount: 100, textLength: 2500, want: 125},
+		{name: "skipped roots", nodeCount: 100000, textLength: 2500000, skipTypeChecking: true, want: 1},
+		{name: "empty checked file", want: 1},
+		{name: "empty skipped file", skipTypeChecking: true, want: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := getCheckerAssociationBaseWeight(test.nodeCount, test.textLength, test.skipTypeChecking); got != test.want {
+				t.Fatalf("getCheckerAssociationBaseWeight() = %d, want %d", got, test.want)
+			}
+		})
 	}
 }
 
