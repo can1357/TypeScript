@@ -214,8 +214,17 @@ func (c *Checker) isSimpleTypeRelatedTo(source *Type, target *Type, relation *Re
 	if t&TypeFlagsNever != 0 {
 		return false
 	}
-	if s&TypeFlagsObject != 0 && t&TypeFlagsObject != 0 {
-		return false
+	assignableOrComparable := relation == c.assignableRelation || relation == c.comparableRelation
+	if s&TypeFlagsAny != 0 && assignableOrComparable {
+		return true
+	}
+	// Non-primitive sources cannot take any of the primitive/enum paths below.
+	// Keep the object and unknown-like-union checks in their original order.
+	if s&TypeFlagsPrimitive == 0 {
+		if s&TypeFlagsObject != 0 && t&TypeFlagsNonPrimitive != 0 && !(relation == c.strictSubtypeRelation && c.IsEmptyAnonymousObjectType(source) && source.objectFlags&ObjectFlagsFreshLiteral == 0) {
+			return true
+		}
+		return assignableOrComparable && t&TypeFlagsUnion != 0 && c.isUnknownLikeUnionType(target)
 	}
 	if s&TypeFlagsStringLike != 0 && t&TypeFlagsString != 0 {
 		return true
@@ -257,13 +266,7 @@ func (c *Checker) isSimpleTypeRelatedTo(source *Type, target *Type, relation *Re
 	if s&TypeFlagsNull != 0 && (!c.strictNullChecks && t&TypeFlagsUnionOrIntersection == 0 || t&TypeFlagsNull != 0) {
 		return true
 	}
-	if s&TypeFlagsObject != 0 && t&TypeFlagsNonPrimitive != 0 && !(relation == c.strictSubtypeRelation && c.IsEmptyAnonymousObjectType(source) && source.objectFlags&ObjectFlagsFreshLiteral == 0) {
-		return true
-	}
-	if relation == c.assignableRelation || relation == c.comparableRelation {
-		if s&TypeFlagsAny != 0 {
-			return true
-		}
+	if assignableOrComparable {
 		// Type number is assignable to any computed numeric enum type or any numeric enum literal type, and
 		// a numeric literal type is assignable any computed numeric enum type or any numeric enum literal type
 		// with a matching value. These rules exist such that enums can be used for bit-flag purposes.
@@ -274,7 +277,7 @@ func (c *Checker) isSimpleTypeRelatedTo(source *Type, target *Type, relation *Re
 			return true
 		}
 		// Anything is assignable to a union containing undefined, null, and {}
-		if c.isUnknownLikeUnionType(target) {
+		if t&TypeFlagsUnion != 0 && c.isUnknownLikeUnionType(target) {
 			return true
 		}
 	}
@@ -2590,9 +2593,6 @@ type Relater struct {
 	maybeKeysSet   collections.Set[CacheHashKey]
 	sourceStack    []*Type
 	targetStack    []*Type
-	maybeCount     int
-	sourceDepth    int
-	targetDepth    int
 	expandingFlags ExpandingFlags
 	overflow       bool
 	relationCount  int
@@ -2609,15 +2609,21 @@ func (c *Checker) getRelater() *Relater {
 }
 
 func (c *Checker) putRelater(r *Relater) {
-	r.resetMaybeStack(0, RelationComparisonResultNone, false)
-	*r = Relater{
-		c:            c,
-		maybeKeys:    r.maybeKeys[:0],
-		maybeKeysSet: r.maybeKeysSet,
-		sourceStack:  r.sourceStack[:0],
-		targetStack:  r.targetStack[:0],
-		next:         c.freeRelater,
+	if len(r.maybeKeys) != 0 {
+		r.resetMaybeStack(0, RelationComparisonResultNone, false)
 	}
+	// Keep the checker, buffers, and empty maybe-key set in place rather than
+	// copying a whole Relater (and its pointer fields) through the write barrier.
+	r.relation = nil
+	r.errorNode = nil
+	r.errorChain = nil
+	r.relatedInfo = nil
+	r.sourceStack = r.sourceStack[:0]
+	r.targetStack = r.targetStack[:0]
+	r.expandingFlags = ExpandingFlagsNone
+	r.overflow = false
+	r.relationCount = 0
+	r.next = c.freeRelater
 	c.freeRelater = r
 }
 

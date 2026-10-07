@@ -2,6 +2,180 @@ package checker
 
 import "testing"
 
+func TestRelaterPoolReset(t *testing.T) {
+	c := &Checker{}
+	typ := c.newIntrinsicType(TypeFlagsString, "string")
+	older := &Relater{c: c}
+	c.freeRelater = older
+	r := &Relater{
+		c: c, relation: &Relation{}, errorChain: &ErrorChain{},
+		sourceStack: []*Type{typ}, targetStack: []*Type{typ},
+		expandingFlags: ExpandingFlagsBoth, overflow: true, relationCount: 10,
+	}
+	r.relatedInfo = append(r.relatedInfo, nil)
+	for i := range 12 {
+		key := CacheHashKey{Lo: uint64(i)}
+		r.maybeKeys = append(r.maybeKeys, key)
+		if i >= inlineMaybeKeys {
+			r.maybeKeysSet.Add(key)
+		}
+	}
+	c.putRelater(r)
+	if c.getRelater() != r || c.freeRelater != older || r.c != c {
+		t.Fatal("relater pool linkage changed")
+	}
+	if r.relation != nil || r.errorNode != nil || r.errorChain != nil || r.relatedInfo != nil ||
+		len(r.maybeKeys) != 0 || len(r.sourceStack) != 0 || len(r.targetStack) != 0 ||
+		r.expandingFlags != ExpandingFlagsNone || r.overflow || r.relationCount != 0 {
+		t.Fatal("relater state was not reset")
+	}
+	for i := inlineMaybeKeys; i < 12; i++ {
+		if r.maybeKeysSet.Has(CacheHashKey{Lo: uint64(i)}) {
+			t.Fatal("retained maybe key after reset")
+		}
+	}
+}
+
+func TestSimpleRelationFlagPaths(t *testing.T) {
+	c := &Checker{
+		strictNullChecks:   true,
+		assignableRelation: &Relation{}, comparableRelation: &Relation{},
+		strictSubtypeRelation: &Relation{},
+	}
+	anyType := c.newIntrinsicType(TypeFlagsAny, "any")
+	unknown := c.newIntrinsicType(TypeFlagsUnknown, "unknown")
+	never := c.newIntrinsicType(TypeFlagsNever, "never")
+	number := c.newIntrinsicType(TypeFlagsNumber, "number")
+	stringType := c.newIntrinsicType(TypeFlagsString, "string")
+	object := c.newObjectType(ObjectFlagsAnonymous, nil)
+	object.objectFlags |= ObjectFlagsMembersResolved
+	fresh := c.newObjectType(ObjectFlagsAnonymous|ObjectFlagsFreshLiteral, nil)
+	fresh.objectFlags |= ObjectFlagsMembersResolved
+	nonPrimitive := c.newIntrinsicType(TypeFlagsNonPrimitive, "object")
+	parameter := c.newTypeParameter(nil)
+	undefined := c.newIntrinsicType(TypeFlagsUndefined, "undefined")
+	null := c.newIntrinsicType(TypeFlagsNull, "null")
+	unknownUnion := c.newType(TypeFlagsUnion, ObjectFlagsNone, &UnionType{
+		UnionOrIntersectionType: UnionOrIntersectionType{types: []*Type{undefined, null, object}},
+	})
+	for i, test := range []struct {
+		source, target *Type
+		relation       *Relation
+		want           bool
+	}{
+		{anyType, object, c.assignableRelation, true},
+		{anyType, never, c.assignableRelation, false},
+		{anyType, unknown, c.strictSubtypeRelation, false},
+		{object, object, c.assignableRelation, false},
+		{object, nonPrimitive, c.assignableRelation, true},
+		{object, nonPrimitive, c.strictSubtypeRelation, false},
+		{fresh, nonPrimitive, c.strictSubtypeRelation, true},
+		{parameter, unknownUnion, c.assignableRelation, true},
+		{parameter, unknownUnion, c.strictSubtypeRelation, false},
+		{unknown, object, c.assignableRelation, false},
+		{number, number, c.assignableRelation, true},
+		{stringType, number, c.assignableRelation, false},
+		{stringType, unknownUnion, c.comparableRelation, true},
+	} {
+		if got := c.isSimpleTypeRelatedTo(test.source, test.target, test.relation, nil); got != test.want {
+			t.Fatalf("case %d: got %v, want %v", i, got, test.want)
+		}
+	}
+	if unknownUnion.objectFlags&(ObjectFlagsIsUnknownLikeUnionComputed|ObjectFlagsIsUnknownLikeUnion) !=
+		ObjectFlagsIsUnknownLikeUnionComputed|ObjectFlagsIsUnknownLikeUnion {
+		t.Fatal("unknown-like union classification was not retained")
+	}
+}
+
+func TestTuplePredicatesAndNormalization(t *testing.T) {
+	c := &Checker{}
+	object := c.newObjectType(ObjectFlagsAnonymous, nil)
+	target := c.newObjectType(ObjectFlagsTuple|ObjectFlagsReference, nil)
+	target.AsTypeReference().target = target
+	target.AsTupleType().combinedFlags = ElementFlagsVariadic
+	reference := c.newObjectType(ObjectFlagsReference, nil)
+	reference.AsTypeReference().target = target
+	for _, typ := range []*Type{target, reference} {
+		if !isTupleType(typ) || !isGenericTupleType(typ) || !c.isGenericTupleType(typ) {
+			t.Fatal("generic tuple reference not recognized")
+		}
+	}
+	target.AsTupleType().combinedFlags = ElementFlagsRequired
+	if !isTupleType(reference) || isGenericTupleType(reference) || c.isGenericTupleType(reference) ||
+		isTupleType(object) || isGenericTupleType(object) {
+		t.Fatal("ordinary tuple/object classification changed")
+	}
+	literal := c.newLiteralType(TypeFlagsStringLiteral, "a", nil)
+	fresh := c.newLiteralType(TypeFlagsStringLiteral, "a", literal)
+	fresh.AsLiteralType().freshType = fresh
+	for _, writing := range []bool{false, true} {
+		if c.getNormalizedType(object, writing) != object ||
+			c.getNormalizedType(literal, writing) != literal ||
+			c.getNormalizedType(fresh, writing) != literal {
+			t.Fatal("normalization fast path changed the result")
+		}
+	}
+}
+
+func TestLazyMapperCache(t *testing.T) {
+	c := &Checker{}
+	c.couldContainTypeVariables = func(typ *Type) bool { return typ.flags&TypeFlagsTypeParameter != 0 }
+	outer := c.newTypeParameter(nil)
+	inner := c.newTypeParameter(nil)
+	number := c.newIntrinsicType(TypeFlagsNumber, "number")
+	var mapper *TypeMapper
+	mapper = newFunctionTypeMapper(func(typ *Type) *Type {
+		if typ == outer {
+			return c.instantiateType(inner, mapper)
+		}
+		return number
+	})
+	c.pushActiveMapper(mapper)
+	if c.activeTypeMappersCaches[0] != nil {
+		t.Fatal("empty mapper frame allocated a cache")
+	}
+	if c.instantiateType(outer, mapper) != number || len(c.activeTypeMappersCaches[0]) != 2 {
+		t.Fatal("outer instantiation replaced its recursively allocated cache")
+	}
+	count := c.TotalInstantiationCount
+	if c.instantiateType(inner, mapper) != number || c.TotalInstantiationCount != count {
+		t.Fatal("nested instantiation was not cached")
+	}
+	cache := c.activeTypeMappersCaches[0]
+	c.popActiveMapper()
+	if len(cache) != 0 || len(c.activeMappers) != 0 {
+		t.Fatal("mapper cache not cleared on pop")
+	}
+	c.pushActiveMapper(mapper)
+	if c.activeTypeMappersCaches[0] == nil {
+		t.Fatal("pop discarded the reusable cache")
+	}
+	c.clearActiveMapperCaches()
+	c.popActiveMapper()
+}
+
+func TestInferencePoolReset(t *testing.T) {
+	c := &Checker{}
+	typ := c.newTypeParameter(nil)
+	n := &InferenceState{
+		inferences: []*InferenceInfo{nil}, originalSource: typ, originalTarget: typ,
+		priority: 1, inferencePriority: 2, contravariant: true, bivariant: true,
+		expandingFlags: ExpandingFlagsBoth, propagationType: typ,
+		visited:     map[InferenceKey]InferencePriority{{source: typ.id}: 1},
+		sourceStack: []*Type{typ}, targetStack: []*Type{typ},
+	}
+	c.putInferenceState(n)
+	if c.getInferenceState() != n || n.originalSource != nil || n.originalTarget != nil ||
+		n.priority != 0 || n.inferencePriority != 0 || n.contravariant || n.bivariant ||
+		n.expandingFlags != ExpandingFlagsNone || n.propagationType != nil ||
+		len(n.inferences) != 0 || len(n.visited) != 0 || len(n.sourceStack) != 0 || len(n.targetStack) != 0 {
+		t.Fatal("inference state was not reset")
+	}
+	if n.visited == nil {
+		t.Fatal("inference reset discarded reusable map")
+	}
+}
+
 func TestRelationCache(t *testing.T) {
 	var relation Relation
 	if relation.get(CacheHashKey{}) != RelationComparisonResultNone {
