@@ -22839,6 +22839,14 @@ func (c *Checker) instantiateTypeWithAlias(t *Type, m *TypeMapper, alias *TypeAl
 	if index == -1 {
 		c.popActiveMapper()
 	} else {
+		if cache == nil {
+			// Recursive instantiation may have allocated this frame's cache.
+			cache = c.activeTypeMappersCaches[index]
+			if cache == nil {
+				cache = make(map[CacheHashKey]*Type, 1)
+				c.activeTypeMappersCaches[index] = cache
+			}
+		}
 		cache[key] = result
 	}
 	c.instantiationStack[len(c.instantiationStack)-1] = nil
@@ -22873,11 +22881,9 @@ func (c *Checker) pushActiveMapper(mapper *TypeMapper) {
 	if cap(c.activeTypeMappersCaches) > lastIndex {
 		// The cap may contain an empty map from popActiveMapper; reuse it.
 		c.activeTypeMappersCaches = c.activeTypeMappersCaches[:lastIndex+1]
-		if c.activeTypeMappersCaches[lastIndex] == nil {
-			c.activeTypeMappersCaches[lastIndex] = make(map[CacheHashKey]*Type, 1)
-		}
 	} else {
-		c.activeTypeMappersCaches = append(c.activeTypeMappersCaches, make(map[CacheHashKey]*Type, 1))
+		// Allocate only if a recursive use of this mapper stores a result.
+		c.activeTypeMappersCaches = append(c.activeTypeMappersCaches, nil)
 	}
 }
 
@@ -22887,7 +22893,9 @@ func (c *Checker) popActiveMapper() {
 
 	// Clear the map, but leave it in the list for later reuse.
 	lastIndex := len(c.activeTypeMappersCaches) - 1
-	clear(c.activeTypeMappersCaches[lastIndex])
+	if cache := c.activeTypeMappersCaches[lastIndex]; len(cache) != 0 {
+		clear(cache)
+	}
 	c.activeTypeMappersCaches = c.activeTypeMappersCaches[:lastIndex]
 }
 
@@ -22897,7 +22905,9 @@ func (c *Checker) findActiveMapper(mapper *TypeMapper) int {
 
 func (c *Checker) clearActiveMapperCaches() {
 	for _, cache := range c.activeTypeMappersCaches {
-		clear(cache)
+		if len(cache) != 0 {
+			clear(cache)
+		}
 	}
 }
 
@@ -24246,7 +24256,8 @@ func (c *Checker) isReadonlyArrayType(t *Type) bool {
 }
 
 func isTupleType(t *Type) bool {
-	return t.objectFlags&ObjectFlagsReference != 0 && t.Target().objectFlags&ObjectFlagsTuple != 0
+	// References have the object target layout; no general Target dispatch is needed.
+	return t.objectFlags&ObjectFlagsReference != 0 && t.AsTypeReference().target.objectFlags&ObjectFlagsTuple != 0
 }
 
 func isMutableTupleType(t *Type) bool {
@@ -24254,7 +24265,11 @@ func isMutableTupleType(t *Type) bool {
 }
 
 func isGenericTupleType(t *Type) bool {
-	return isTupleType(t) && t.TargetTupleType().combinedFlags&ElementFlagsVariadic != 0
+	if t.objectFlags&ObjectFlagsReference == 0 {
+		return false
+	}
+	target := t.AsTypeReference().target
+	return target.objectFlags&ObjectFlagsTuple != 0 && target.AsTupleType().combinedFlags&ElementFlagsVariadic != 0
 }
 
 func isSingleElementGenericTupleType(t *Type) bool {
@@ -25671,7 +25686,7 @@ func (c *Checker) getGenericObjectFlags(t *Type) ObjectFlags {
 }
 
 func (c *Checker) isGenericTupleType(t *Type) bool {
-	return isTupleType(t) && t.TargetTupleType().combinedFlags&ElementFlagsVariadic != 0
+	return isGenericTupleType(t)
 }
 
 func (c *Checker) isGenericMappedType(t *Type) bool {
@@ -28742,14 +28757,19 @@ func (c *Checker) typeHasCallOrConstructSignatures(t *Type) bool {
 
 func (c *Checker) getNormalizedType(t *Type, writing bool) *Type {
 	for {
+		// Ordinary types cannot enter any normalization arm below.
+		if t.flags&(TypeFlagsFreshable|TypeFlagsUnionOrIntersection|TypeFlagsSubstitution|TypeFlagsSimplifiable) == 0 && t.objectFlags&ObjectFlagsReference == 0 {
+			return t
+		}
 		var n *Type
 		switch {
 		case isFreshLiteralType(t):
 			n = t.AsLiteralType().regularType
-		case c.isGenericTupleType(t):
-			n = c.getNormalizedTupleType(t, writing)
 		case t.objectFlags&ObjectFlagsReference != 0:
-			if t.AsTypeReference().node != nil {
+			ref := t.AsTypeReference()
+			if ref.target.objectFlags&ObjectFlagsTuple != 0 && ref.target.AsTupleType().combinedFlags&ElementFlagsVariadic != 0 {
+				n = c.getNormalizedTupleType(t, writing)
+			} else if ref.node != nil {
 				n = c.createTypeReference(t.Target(), c.getTypeArguments(t))
 			} else {
 				n = c.getSingleBaseForNonAugmentingSubtype(t)

@@ -42,14 +42,21 @@ func (c *Checker) getInferenceState() *InferenceState {
 }
 
 func (c *Checker) putInferenceState(n *InferenceState) {
-	clear(n.visited)
-	*n = InferenceState{
-		inferences:  n.inferences[:0],
-		visited:     n.visited,
-		sourceStack: n.sourceStack[:0],
-		targetStack: n.targetStack[:0],
-		next:        c.freeinferenceState,
+	if len(n.visited) != 0 {
+		clear(n.visited)
 	}
+	n.inferences = n.inferences[:0]
+	n.originalSource = nil
+	n.originalTarget = nil
+	n.priority = 0
+	n.inferencePriority = 0
+	n.contravariant = false
+	n.bivariant = false
+	n.expandingFlags = ExpandingFlagsNone
+	n.propagationType = nil
+	n.sourceStack = n.sourceStack[:0]
+	n.targetStack = n.targetStack[:0]
+	n.next = c.freeinferenceState
 	c.freeinferenceState = n
 }
 
