@@ -1,0 +1,35 @@
+//// [tests/cases/compiler/mappedTypePrintedDuringMemberResolution.ts] ////
+
+=== mappedTypePrintedDuringMemberResolution.ts ===
+// While the members of x's mapped type are resolved, errors print it as {}; afterwards, errors
+// print its resolved members.
+declare function g(s: string): number;
+>g : (s: string) => number
+>s : string
+
+x.a;
+>x.a : { v: number; w: number; }
+>x : { a: { v: number; w: number; }; }
+>a : { v: number; w: number; }
+
+declare var x: { [K in "a"]: typeof o };
+>x : { a: { v: number; w: number; }; }
+>o : { v: number; w: number; }
+
+const o = { v: g(x), w: g(x) };
+>o : { v: number; w: number; }
+>{ v: g(x), w: g(x) } : { v: number; w: number; }
+>v : number
+>g(x) : number
+>g : (s: string) => number
+>x : { a: { v: number; w: number; }; }
+>w : number
+>g(x) : number
+>g : (s: string) => number
+>x : { a: { v: number; w: number; }; }
+
+x.b;
+>x.b : any
+>x : { a: { v: number; w: number; }; }
+>b : any
+

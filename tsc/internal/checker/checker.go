@@ -601,6 +601,9 @@ type Checker struct {
 	conditionalConstraintDepth                  uint32
 	inlineLevel                                 int
 	serializationLevel                          int
+	typeToStringCache                           map[typeToStringKey]typeToStringEntry
+	printSensitiveEvents                        int // Reported diagnostics and detected resolution cycles; see typeToStringEx.
+	resolvingMembers                            int // Depth of member resolutions in progress; see typeToStringEx.
 	currentNode                                 *ast.Node
 	varianceTypeParameter                       *Type
 	languageVersion                             core.ScriptTarget
@@ -14258,6 +14261,7 @@ func (c *Checker) produceDeferredDiagnostics() {
 }
 
 func (c *Checker) addDiagnostic(diagnostic *ast.Diagnostic) *ast.Diagnostic {
+	c.printSensitiveEvents++
 	// Discard diagnostics created while at the maximum number of recursive TypeToString invocations.
 	if c.serializationLevel < maxSerializationLevel {
 		return c.diagnostics.Add(diagnostic)
@@ -14266,6 +14270,7 @@ func (c *Checker) addDiagnostic(diagnostic *ast.Diagnostic) *ast.Diagnostic {
 }
 
 func (c *Checker) addSuggestionDiagnostic(diagnostic *ast.Diagnostic) *ast.Diagnostic {
+	c.printSensitiveEvents++
 	// Discard diagnostics created while at the maximum number of recursive TypeToString invocations.
 	if c.serializationLevel < maxSerializationLevel {
 		return c.suggestionDiagnostics.Add(diagnostic)
@@ -16336,6 +16341,8 @@ func (c *Checker) getResolvedMembersOrExportsOfSymbol(symbol *ast.Symbol, resolu
 			earlySymbols, _ = c.getExportsOfModuleWorker(symbol)
 		}
 		links[resolutionKind] = earlySymbols
+		// Until late binding completes, the members lack the late-bound ones; see typeToStringEx.
+		c.resolvingMembers++
 		// fill in any as-yet-unresolved late-bound members.
 		var lateSymbols ast.SymbolTable
 		for _, decl := range symbol.Declarations() {
@@ -16369,6 +16376,7 @@ func (c *Checker) getResolvedMembersOrExportsOfSymbol(symbol *ast.Symbol, resolu
 			}
 		}
 		links[resolutionKind] = c.combineSymbolTables(earlySymbols, lateSymbols)
+		c.resolvingMembers--
 	}
 	return links[resolutionKind]
 }
@@ -19195,6 +19203,7 @@ func (c *Checker) pushTypeResolution(target TypeSystemEntity, propertyName TypeS
 	resolutionCycleStartIndex := c.findResolutionCycleStartIndex(target, propertyName)
 	if resolutionCycleStartIndex >= 0 {
 		// A cycle was found
+		c.printSensitiveEvents++
 		for i := resolutionCycleStartIndex; i < len(c.typeResolutions); i++ {
 			c.typeResolutions[i].result = false
 		}
@@ -19490,6 +19499,8 @@ func (c *Checker) isApplicableIndexType(source *Type, target *Type) bool {
 
 func (c *Checker) resolveStructuredTypeMembers(t *Type) *StructuredType {
 	if t.objectFlags&ObjectFlagsMembersResolved == 0 {
+		// Some resolutions install empty members before computing the real ones; see typeToStringEx.
+		c.resolvingMembers++
 		switch {
 		case t.flags&TypeFlagsObject != 0:
 			switch {
@@ -19513,6 +19524,7 @@ func (c *Checker) resolveStructuredTypeMembers(t *Type) *StructuredType {
 		default:
 			panic("Unhandled case in resolveStructuredTypeMembers")
 		}
+		c.resolvingMembers--
 	}
 	return t.AsStructuredType()
 }
@@ -22743,7 +22755,7 @@ func (c *Checker) instantiateTypeWithAlias(t *Type, m *TypeMapper, alias *TypeAl
 	if t == nil || m == nil || !(c.couldContainTypeVariables(t) || (t.alias != nil && len(t.alias.typeArguments) > 0 && core.Some(t.alias.typeArguments, c.couldContainTypeVariables))) {
 		return t
 	}
-	if len(c.instantiationStack) == 100 || c.instantiationCount >= 5_000_000 {
+	if len(c.instantiationStack) == 100 || c.instantiationCount >= maxInstantiationCount {
 		// We have reached 100 recursive type instantiations, or 5M type instantiations caused by the same statement
 		// or expression. There is a very high likelihood we're dealing with a combination of infinite generic types
 		// that perpetually generate new type identities, so we stop the recursion here by yielding the error type.

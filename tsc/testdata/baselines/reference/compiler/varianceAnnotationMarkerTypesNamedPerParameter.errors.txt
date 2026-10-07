@@ -1,0 +1,38 @@
+varianceAnnotationMarkerTypesNamedPerParameter.ts(3,8): error TS2636: Type 'A<super-T>' is not assignable to type 'A<sub-T>' as implied by variance annotation.
+  Types of property 'x' are incompatible.
+    Type 'super-T' is not assignable to type 'sub-T'.
+varianceAnnotationMarkerTypesNamedPerParameter.ts(4,8): error TS2636: Type 'B<super-U>' is not assignable to type 'B<sub-U>' as implied by variance annotation.
+  Types of property 'x' are incompatible.
+    Type 'super-U' is not assignable to type 'sub-U'.
+varianceAnnotationMarkerTypesNamedPerParameter.ts(5,8): error TS2636: Type 'C<sub-V>' is not assignable to type 'C<super-V>' as implied by variance annotation.
+  Types of parameters 'v' and 'v' are incompatible.
+    Type 'super-V' is not assignable to type 'sub-V'.
+varianceAnnotationMarkerTypesNamedPerParameter.ts(6,8): error TS2636: Type 'D<sub-W>' is not assignable to type 'D<super-W>' as implied by variance annotation.
+  Types of parameters 'w' and 'w' are incompatible.
+    Type 'super-W' is not assignable to type 'sub-W'.
+
+
+==== varianceAnnotationMarkerTypesNamedPerParameter.ts (4 errors) ====
+    // Each invalid variance annotation reports its own marker types (super-U, sub-U, ...), not those
+    // of the first annotation checked.
+    type A<in T> = { x: T };
+           ~~~~
+!!! error TS2636: Type 'A<super-T>' is not assignable to type 'A<sub-T>' as implied by variance annotation.
+!!! error TS2636:   Types of property 'x' are incompatible.
+!!! error TS2636:     Type 'super-T' is not assignable to type 'sub-T'.
+    type B<in U> = { x: U };
+           ~~~~
+!!! error TS2636: Type 'B<super-U>' is not assignable to type 'B<sub-U>' as implied by variance annotation.
+!!! error TS2636:   Types of property 'x' are incompatible.
+!!! error TS2636:     Type 'super-U' is not assignable to type 'sub-U'.
+    type C<out V> = (v: V) => void;
+           ~~~~~
+!!! error TS2636: Type 'C<sub-V>' is not assignable to type 'C<super-V>' as implied by variance annotation.
+!!! error TS2636:   Types of parameters 'v' and 'v' are incompatible.
+!!! error TS2636:     Type 'super-V' is not assignable to type 'sub-V'.
+    type D<out W> = (w: W) => void;
+           ~~~~~
+!!! error TS2636: Type 'D<sub-W>' is not assignable to type 'D<super-W>' as implied by variance annotation.
+!!! error TS2636:   Types of parameters 'w' and 'w' are incompatible.
+!!! error TS2636:     Type 'super-W' is not assignable to type 'sub-W'.
+    

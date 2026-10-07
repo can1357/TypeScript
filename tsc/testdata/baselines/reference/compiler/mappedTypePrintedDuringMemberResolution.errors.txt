@@ -1,0 +1,20 @@
+mappedTypePrintedDuringMemberResolution.ts(6,18): error TS2345: Argument of type '{}' is not assignable to parameter of type 'string'.
+mappedTypePrintedDuringMemberResolution.ts(6,27): error TS2345: Argument of type '{}' is not assignable to parameter of type 'string'.
+mappedTypePrintedDuringMemberResolution.ts(7,3): error TS2339: Property 'b' does not exist on type '{ a: { v: number; w: number; }; }'.
+
+
+==== mappedTypePrintedDuringMemberResolution.ts (3 errors) ====
+    // While the members of x's mapped type are resolved, errors print it as {}; afterwards, errors
+    // print its resolved members.
+    declare function g(s: string): number;
+    x.a;
+    declare var x: { [K in "a"]: typeof o };
+    const o = { v: g(x), w: g(x) };
+                     ~
+!!! error TS2345: Argument of type '{}' is not assignable to parameter of type 'string'.
+                              ~
+!!! error TS2345: Argument of type '{}' is not assignable to parameter of type 'string'.
+    x.b;
+      ~
+!!! error TS2339: Property 'b' does not exist on type '{ a: { v: number; w: number; }; }'.
+    

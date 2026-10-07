@@ -1,0 +1,31 @@
+//// [tests/cases/compiler/mappedTypePrintedDuringMemberResolution.ts] ////
+
+=== mappedTypePrintedDuringMemberResolution.ts ===
+// While the members of x's mapped type are resolved, errors print it as {}; afterwards, errors
+// print its resolved members.
+declare function g(s: string): number;
+>g : Symbol(g, Decl(mappedTypePrintedDuringMemberResolution.ts, 0, 0))
+>s : Symbol(s, Decl(mappedTypePrintedDuringMemberResolution.ts, 2, 19))
+
+x.a;
+>x.a : Symbol(a)
+>x : Symbol(x, Decl(mappedTypePrintedDuringMemberResolution.ts, 4, 11))
+>a : Symbol(a)
+
+declare var x: { [K in "a"]: typeof o };
+>x : Symbol(x, Decl(mappedTypePrintedDuringMemberResolution.ts, 4, 11))
+>K : Symbol(K, Decl(mappedTypePrintedDuringMemberResolution.ts, 4, 18))
+>o : Symbol(o, Decl(mappedTypePrintedDuringMemberResolution.ts, 5, 5))
+
+const o = { v: g(x), w: g(x) };
+>o : Symbol(o, Decl(mappedTypePrintedDuringMemberResolution.ts, 5, 5))
+>v : Symbol(v, Decl(mappedTypePrintedDuringMemberResolution.ts, 5, 11))
+>g : Symbol(g, Decl(mappedTypePrintedDuringMemberResolution.ts, 0, 0))
+>x : Symbol(x, Decl(mappedTypePrintedDuringMemberResolution.ts, 4, 11))
+>w : Symbol(w, Decl(mappedTypePrintedDuringMemberResolution.ts, 5, 20))
+>g : Symbol(g, Decl(mappedTypePrintedDuringMemberResolution.ts, 0, 0))
+>x : Symbol(x, Decl(mappedTypePrintedDuringMemberResolution.ts, 4, 11))
+
+x.b;
+>x : Symbol(x, Decl(mappedTypePrintedDuringMemberResolution.ts, 4, 11))
+

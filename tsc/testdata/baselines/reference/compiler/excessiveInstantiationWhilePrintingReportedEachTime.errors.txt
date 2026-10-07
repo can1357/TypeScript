@@ -1,0 +1,23 @@
+excessiveInstantiationWhilePrintingReportedEachTime.ts(5,6): error TS2322: Type '() => [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[any]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]' is not assignable to type 'never'.
+excessiveInstantiationWhilePrintingReportedEachTime.ts(5,6): error TS2589: Type instantiation is excessively deep and possibly infinite.
+excessiveInstantiationWhilePrintingReportedEachTime.ts(6,6): error TS2322: Type '() => [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[any]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]' is not assignable to type 'never'.
+excessiveInstantiationWhilePrintingReportedEachTime.ts(6,6): error TS2589: Type instantiation is excessively deep and possibly infinite.
+
+
+==== excessiveInstantiationWhilePrintingReportedEachTime.ts (4 errors) ====
+    // Printing the type of b.f instantiates its return type too deeply; each print reports it.
+    declare class B<Q> { f(): [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[Q]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]; }
+    function check<U>() {
+     let b!: B<[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[U]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]>;
+     let x: never = b.f;
+         ~
+!!! error TS2322: Type '() => [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[any]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]' is not assignable to type 'never'.
+         ~
+!!! error TS2589: Type instantiation is excessively deep and possibly infinite.
+     let y: never = b.f;
+         ~
+!!! error TS2322: Type '() => [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[any]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]' is not assignable to type 'never'.
+         ~
+!!! error TS2589: Type instantiation is excessively deep and possibly infinite.
+    }
+    

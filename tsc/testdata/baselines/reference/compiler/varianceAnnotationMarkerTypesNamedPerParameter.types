@@ -1,0 +1,21 @@
+//// [tests/cases/compiler/varianceAnnotationMarkerTypesNamedPerParameter.ts] ////
+
+=== varianceAnnotationMarkerTypesNamedPerParameter.ts ===
+// Each invalid variance annotation reports its own marker types (super-U, sub-U, ...), not those
+// of the first annotation checked.
+type A<in T> = { x: T };
+>A : A<T>
+>x : T
+
+type B<in U> = { x: U };
+>B : B<U>
+>x : U
+
+type C<out V> = (v: V) => void;
+>C : C<V>
+>v : V
+
+type D<out W> = (w: W) => void;
+>D : D<W>
+>w : W
+

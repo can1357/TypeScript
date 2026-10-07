@@ -1,0 +1,32 @@
+//// [tests/cases/compiler/excessiveInstantiationWhilePrintingReportedEachTime.ts] ////
+
+=== excessiveInstantiationWhilePrintingReportedEachTime.ts ===
+// Printing the type of b.f instantiates its return type too deeply; each print reports it.
+declare class B<Q> { f(): [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[Q]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]; }
+>B : Symbol(B, Decl(excessiveInstantiationWhilePrintingReportedEachTime.ts, 0, 0))
+>Q : Symbol(Q, Decl(excessiveInstantiationWhilePrintingReportedEachTime.ts, 1, 16))
+>f : Symbol(B.f, Decl(excessiveInstantiationWhilePrintingReportedEachTime.ts, 1, 20))
+>Q : Symbol(Q, Decl(excessiveInstantiationWhilePrintingReportedEachTime.ts, 1, 16))
+
+function check<U>() {
+>check : Symbol(check, Decl(excessiveInstantiationWhilePrintingReportedEachTime.ts, 1, 130))
+>U : Symbol(U, Decl(excessiveInstantiationWhilePrintingReportedEachTime.ts, 2, 15))
+
+ let b!: B<[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[U]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]>;
+>b : Symbol(b, Decl(excessiveInstantiationWhilePrintingReportedEachTime.ts, 3, 4))
+>B : Symbol(B, Decl(excessiveInstantiationWhilePrintingReportedEachTime.ts, 0, 0))
+>U : Symbol(U, Decl(excessiveInstantiationWhilePrintingReportedEachTime.ts, 2, 15))
+
+ let x: never = b.f;
+>x : Symbol(x, Decl(excessiveInstantiationWhilePrintingReportedEachTime.ts, 4, 4))
+>b.f : Symbol(B.f, Decl(excessiveInstantiationWhilePrintingReportedEachTime.ts, 1, 20))
+>b : Symbol(b, Decl(excessiveInstantiationWhilePrintingReportedEachTime.ts, 3, 4))
+>f : Symbol(B.f, Decl(excessiveInstantiationWhilePrintingReportedEachTime.ts, 1, 20))
+
+ let y: never = b.f;
+>y : Symbol(y, Decl(excessiveInstantiationWhilePrintingReportedEachTime.ts, 5, 4))
+>b.f : Symbol(B.f, Decl(excessiveInstantiationWhilePrintingReportedEachTime.ts, 1, 20))
+>b : Symbol(b, Decl(excessiveInstantiationWhilePrintingReportedEachTime.ts, 3, 4))
+>f : Symbol(B.f, Decl(excessiveInstantiationWhilePrintingReportedEachTime.ts, 1, 20))
+}
+
