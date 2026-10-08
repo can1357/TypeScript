@@ -678,7 +678,7 @@ type Checker struct {
 	indexInfoArena                              core.Arena[IndexInfo]
 	typeReferenceArena                          core.Arena[TypeReference]
 	literalTypeArena                            core.Arena[LiteralType]
-	mergedSymbols                               map[*ast.Symbol]*ast.Symbol
+	mergedSymbols                               symbolLinkStore[*ast.Symbol]
 	mergedExportsChecked                        collections.Set[*ast.Symbol]
 	factory                                     ast.NodeFactory
 	ids                                         ast.IdAllocator
@@ -695,19 +695,19 @@ type Checker struct {
 	symbolReferenceLinks                        symbolArenaLinkStore[SymbolReferenceLinks]
 	valueSymbolLinks                            symbolArenaLinkStore[ValueSymbolLinks]
 	mappedSymbolLinks                           symbolArenaLinkStore[MappedSymbolLinks]
-	deferredSymbolLinks                         core.LinkStore[*ast.Symbol, DeferredSymbolLinks]
+	deferredSymbolLinks                         symbolArenaLinkStore[DeferredSymbolLinks]
 	aliasSymbolLinks                            symbolArenaLinkStore[AliasSymbolLinks]
-	moduleSymbolLinks                           core.LinkStore[*ast.Symbol, ModuleSymbolLinks]
-	lateBoundLinks                              core.LinkStore[*ast.Symbol, LateBoundLinks]
-	exportTypeLinks                             core.LinkStore[*ast.Symbol, ExportTypeLinks]
-	membersAndExportsLinks                      core.LinkStore[*ast.Symbol, MembersAndExportsLinks]
-	typeAliasLinks                              core.LinkStore[*ast.Symbol, TypeAliasLinks]
-	declaredTypeLinks                           core.LinkStore[*ast.Symbol, DeclaredTypeLinks]
-	spreadLinks                                 core.LinkStore[*ast.Symbol, SpreadLinks]
-	varianceLinks                               core.LinkStore[*ast.Symbol, VarianceLinks]
-	ReverseMappedSymbolLinks                    core.LinkStore[*ast.Symbol, ReverseMappedSymbolLinks]
-	markedAssignmentSymbolLinks                 core.LinkStore[*ast.Symbol, MarkedAssignmentSymbolLinks]
-	symbolContainerLinks                        core.LinkStore[*ast.Symbol, ContainingSymbolLinks]
+	moduleSymbolLinks                           symbolArenaLinkStore[ModuleSymbolLinks]
+	lateBoundLinks                              symbolArenaLinkStore[LateBoundLinks]
+	exportTypeLinks                             symbolArenaLinkStore[ExportTypeLinks]
+	membersAndExportsLinks                      symbolArenaLinkStore[MembersAndExportsLinks]
+	typeAliasLinks                              symbolArenaLinkStore[TypeAliasLinks]
+	declaredTypeLinks                           symbolArenaLinkStore[DeclaredTypeLinks]
+	spreadLinks                                 symbolArenaLinkStore[SpreadLinks]
+	varianceLinks                               symbolArenaLinkStore[VarianceLinks]
+	ReverseMappedSymbolLinks                    symbolArenaLinkStore[ReverseMappedSymbolLinks]
+	markedAssignmentSymbolLinks                 symbolArenaLinkStore[MarkedAssignmentSymbolLinks]
+	symbolContainerLinks                        symbolArenaLinkStore[ContainingSymbolLinks]
 	externalModuleContainers                    *externalModuleContainerIndex
 	sourceFileLinks                             core.LinkStore[*ast.SourceFile, SourceFileLinks]
 	regExpScanner                               *scanner.Scanner
@@ -934,6 +934,19 @@ func NewChecker(program Program, tracer *Tracer) (*Checker, *sync.Mutex) {
 	c.valueSymbolLinks.ids = &c.ids
 	c.mappedSymbolLinks.ids = &c.ids
 	c.aliasSymbolLinks.ids = &c.ids
+	c.mergedSymbols.ids = &c.ids
+	c.lateBoundLinks.ids = &c.ids
+	c.membersAndExportsLinks.ids = &c.ids
+	c.declaredTypeLinks.ids = &c.ids
+	c.varianceLinks.ids = &c.ids
+	c.markedAssignmentSymbolLinks.ids = &c.ids
+	c.deferredSymbolLinks.ids = &c.ids
+	c.moduleSymbolLinks.ids = &c.ids
+	c.exportTypeLinks.ids = &c.ids
+	c.typeAliasLinks.ids = &c.ids
+	c.spreadLinks.ids = &c.ids
+	c.ReverseMappedSymbolLinks.ids = &c.ids
+	c.symbolContainerLinks.ids = &c.ids
 	c.tracer = tracer
 	c.program = program
 	c.compilerOptions = program.Options()
@@ -999,7 +1012,6 @@ func NewChecker(program Program, tracer *Tracer) (*Checker, *sync.Mutex) {
 	c.unionOfUnionTypes = make(map[UnionOfUnionKey]*Type)
 	c.intersectionTypes = make(map[CacheHashKey]*Type)
 	c.propertiesTypes = make(map[PropertiesTypesKey]*Type)
-	c.mergedSymbols = make(map[*ast.Symbol]*ast.Symbol)
 	c.patternForType = make(map[*Type]*ast.Node)
 	c.contextFreeTypes = make(map[*ast.Node]*Type)
 	c.anyType = c.newIntrinsicType(TypeFlagsAny, "any")
@@ -14657,9 +14669,8 @@ func (c *Checker) cloneSymbol(symbol *ast.Symbol) *ast.Symbol {
 
 func (c *Checker) getMergedSymbol(symbol *ast.Symbol) *ast.Symbol {
 	if symbol != nil {
-		merged := c.mergedSymbols[symbol]
-		if merged != nil {
-			return merged
+		if merged := c.mergedSymbols.TryGet(symbol); merged != nil && *merged != nil {
+			return *merged
 		}
 	}
 	return symbol
@@ -14673,7 +14684,7 @@ func (c *Checker) getParentOfSymbol(symbol *ast.Symbol) *ast.Symbol {
 }
 
 func (c *Checker) recordMergedSymbol(target *ast.Symbol, source *ast.Symbol) {
-	c.mergedSymbols[source] = target
+	*c.mergedSymbols.Get(source) = target
 }
 
 func (c *Checker) getResolvedTarget(symbol *ast.Symbol) *ast.Symbol {

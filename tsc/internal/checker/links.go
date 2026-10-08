@@ -24,6 +24,26 @@ func (s *nodeLinkStore[V]) TryGet(node *ast.Node) *V {
 	return s.store.TryGet(uint64(s.ids.NodeId(node)))
 }
 
+// symbolLinkStore is a links store keyed by symbols whose values are stored directly in the
+// pages of the store, which suits values where sizeof(V) is small.
+type symbolLinkStore[V any] struct {
+	store core.PagedLinkStore[V]
+	ids   *ast.IdAllocator
+}
+
+func (s *symbolLinkStore[V]) Get(symbol *ast.Symbol) *V {
+	return s.store.Get(uint64(s.ids.SymbolId(symbol)))
+}
+
+// TryGet returns the links of symbol, or nil if it has none. It does not assign an id to the
+// symbol: a symbol without an id has no links.
+func (s *symbolLinkStore[V]) TryGet(symbol *ast.Symbol) *V {
+	if id := ast.AssignedSymbolId(symbol); id != 0 {
+		return s.store.TryGet(uint64(id))
+	}
+	return nil
+}
+
 // Arena link stores retain exact entry membership and allocate values only for
 // accessed IDs. Each checker owns its pages and arena; only the atomically
 // assigned node and symbol IDs are shared between checkers.
