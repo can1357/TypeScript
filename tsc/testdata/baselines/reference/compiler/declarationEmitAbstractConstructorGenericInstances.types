@@ -1,0 +1,29 @@
+//// [tests/cases/compiler/declarationEmitAbstractConstructorGenericInstances.ts] ////
+
+=== declarationEmitAbstractConstructorGenericInstances.ts ===
+// Several instances of a generic class merged with an abstract construct signature type.
+type C<T> = abstract new () => T;
+>C : C<T>
+
+export function make<T>() {
+>make : <T>() => I
+
+    class I { foo!: T; }
+>I : I
+>foo : T
+
+    interface I extends C<T> {}
+    return null as unknown as I;
+>null as unknown as I : I
+>null as unknown : unknown
+}
+export const a = make<number>();
+>a : make.I
+>make<number>() : make.I
+>make : <T>() => I
+
+export const b = make<string>();
+>b : make.I
+>make<string>() : make.I
+>make : <T>() => I
+
