@@ -29,6 +29,8 @@ func (s *batchSys) BeforeBatchCompilation() func() {
 		return func() {}
 	}
 	total = minLimit(total, limit)
+	// First: releasing the reservation runs a collection, which must not count as the batch's first.
+	reserveHugePageHeap(total)
 	s.gc = configureBatchGC(total)
 	return s.gc.restore
 }
