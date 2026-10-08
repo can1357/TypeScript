@@ -171,7 +171,7 @@ func (c *Checker) getAlternativeContainingModules(symbol *ast.Symbol, enclosingD
 		return nil
 	}
 	containingFile := ast.GetSourceFileOfNode(enclosingDeclaration)
-	id := ast.GetNodeId(containingFile.AsNode())
+	id := c.ids.NodeId(containingFile.AsNode())
 	links := c.symbolContainerLinks.Get(symbol)
 	if links.extendedContainersByFile == nil {
 		links.extendedContainersByFile = make(map[ast.NodeId][]*ast.Symbol)
@@ -541,7 +541,7 @@ func (c *Checker) getAccessibleSymbolChainEx(ctx accessibleSymbolChainContext) [
 * @param {ignoreQualification} boolean Set when a symbol is being looked for through the exports of another symbol (meaning we have a route to qualify it already)
  */
 func (c *Checker) getAccessibleSymbolChainFromSymbolTable(ctx accessibleSymbolChainContext, t ast.SymbolTable, tableId symbolTableID, ignoreQualification bool, isLocalNameLookup bool) []*ast.Symbol {
-	symId := ast.GetSymbolId(ctx.symbol)
+	symId := c.ids.SymbolId(ctx.symbol)
 	visitedSymbolTables, ok := ctx.visitedSymbolTablesMap[symId]
 	if !ok {
 		visitedSymbolTables = make(map[symbolTableID]struct{})
@@ -881,7 +881,7 @@ func (c *Checker) someSymbolTableInScope(
 // bindAnonymousDeclaration and aren't stored in any container's locals, so this
 // synthesized table lets someSymbolTableInScope expose them during accessibility checks.
 func (c *Checker) getClassExpressionNameTable(location *ast.Node) ast.SymbolTable {
-	nodeId := ast.GetNodeId(location)
+	nodeId := c.ids.NodeId(location)
 	if c.classExpressionNameTables != nil {
 		if table, ok := c.classExpressionNameTables[nodeId]; ok {
 			return table

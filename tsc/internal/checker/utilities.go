@@ -409,7 +409,7 @@ func (c *Checker) sortSymbols(symbols []*ast.Symbol) {
 		if r := strings.Compare(s1.Name(), s2.Name()); r != 0 {
 			return r
 		}
-		return int(ast.GetSymbolId(s1)) - int(ast.GetSymbolId(s2))
+		return int(c.ids.SymbolId(s1)) - int(c.ids.SymbolId(s2))
 	})
 	for i, key := range keys {
 		symbols[i] = key.symbol
@@ -442,7 +442,7 @@ func (c *Checker) compareSymbolsWorker(s1, s2 *ast.Symbol) int {
 	}
 	// Fall back to symbol IDs. This is a last resort that should happen only when symbols have
 	// no declaration and duplicate names.
-	return int(ast.GetSymbolId(s1)) - int(ast.GetSymbolId(s2))
+	return int(c.ids.SymbolId(s1)) - int(c.ids.SymbolId(s2))
 }
 
 func (c *Checker) compareNodes(n1, n2 *ast.Node) int {

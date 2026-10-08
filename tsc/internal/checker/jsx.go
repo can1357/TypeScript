@@ -264,7 +264,7 @@ func (c *Checker) getContextualTypeForChildJsxExpression(node *ast.Node, child *
 }
 
 func (c *Checker) discriminateContextualTypeByJSXAttributes(node *ast.Node, contextualType *Type) *Type {
-	key := DiscriminatedContextualTypeKey{nodeId: ast.GetNodeId(node), typeId: contextualType.id}
+	key := DiscriminatedContextualTypeKey{nodeId: c.ids.NodeId(node), typeId: contextualType.id}
 	if discriminated := c.discriminatedContextualTypes[key]; discriminated != nil {
 		return discriminated
 	}

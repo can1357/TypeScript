@@ -9,18 +9,19 @@ import (
 // in the pages of the store which is suitable for values where sizeof(V) is small.
 type nodeLinkStore[V any] struct {
 	store core.PagedLinkStore[V]
+	ids   *ast.IdAllocator
 }
 
 func (s *nodeLinkStore[V]) Get(node *ast.Node) *V {
-	return s.store.Get(uint64(ast.GetNodeId(node)))
+	return s.store.Get(uint64(s.ids.NodeId(node)))
 }
 
 func (s *nodeLinkStore[V]) Has(node *ast.Node) bool {
-	return s.store.Has(uint64(ast.GetNodeId(node)))
+	return s.store.Has(uint64(s.ids.NodeId(node)))
 }
 
 func (s *nodeLinkStore[V]) TryGet(node *ast.Node) *V {
-	return s.store.TryGet(uint64(ast.GetNodeId(node)))
+	return s.store.TryGet(uint64(s.ids.NodeId(node)))
 }
 
 // Arena link stores retain exact entry membership and allocate values only for
@@ -28,33 +29,35 @@ func (s *nodeLinkStore[V]) TryGet(node *ast.Node) *V {
 // assigned node and symbol IDs are shared between checkers.
 type nodeArenaLinkStore[V any] struct {
 	store core.PagedArenaLinkStore[V]
+	ids   *ast.IdAllocator
 }
 
 func (s *nodeArenaLinkStore[V]) Get(node *ast.Node) *V {
-	return s.store.Get(uint64(ast.GetNodeId(node)))
+	return s.store.Get(uint64(s.ids.NodeId(node)))
 }
 
 func (s *nodeArenaLinkStore[V]) Has(node *ast.Node) bool {
-	return s.store.Has(uint64(ast.GetNodeId(node)))
+	return s.store.Has(uint64(s.ids.NodeId(node)))
 }
 
 func (s *nodeArenaLinkStore[V]) TryGet(node *ast.Node) *V {
-	return s.store.TryGet(uint64(ast.GetNodeId(node)))
+	return s.store.TryGet(uint64(s.ids.NodeId(node)))
 }
 
 // symbolArenaLinkStore stores symbol links indirectly in an arena.
 type symbolArenaLinkStore[V any] struct {
 	store core.PagedArenaLinkStore[V]
+	ids   *ast.IdAllocator
 }
 
 func (s *symbolArenaLinkStore[V]) Get(symbol *ast.Symbol) *V {
-	return s.store.Get(uint64(ast.GetSymbolId(symbol)))
+	return s.store.Get(uint64(s.ids.SymbolId(symbol)))
 }
 
 func (s *symbolArenaLinkStore[V]) Has(symbol *ast.Symbol) bool {
-	return s.store.Has(uint64(ast.GetSymbolId(symbol)))
+	return s.store.Has(uint64(s.ids.SymbolId(symbol)))
 }
 
 func (s *symbolArenaLinkStore[V]) TryGet(symbol *ast.Symbol) *V {
-	return s.store.TryGet(uint64(ast.GetSymbolId(symbol)))
+	return s.store.TryGet(uint64(s.ids.SymbolId(symbol)))
 }

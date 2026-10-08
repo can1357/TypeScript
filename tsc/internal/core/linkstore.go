@@ -92,31 +92,40 @@ const (
 	maxPageCount = 65536
 )
 
+// Pages below maxPageCount are found through a directory of page tables, each covering
+// pageTableSize consecutive pages. A store whose keys are spread out (ids assigned long apart,
+// as in a long language service session) then allocates tables only around its keys.
+const (
+	pageTableShift = 9
+	pageTableSize  = 1 << pageTableShift
+	pageTableMask  = pageTableSize - 1
+)
+
 // Implements a sparse-array-like structure for storing elements keyed by dense uint64 keys. Elements are
-// stored in fixed-size pages of 256 entries and an index of pages is maintained in an array for lower valued
-// page indices and a map for higher valued page indices.
+// stored in fixed-size pages of 256 entries and an index of pages is maintained in a two-level table for
+// lower valued page indices and a map for higher valued page indices.
 type PagedLinkStore[V any] struct {
-	pageMap  map[uint64]*[pageSize]V // Page map for page indices above maxPageCount
-	pageList []*[pageSize]V          // Page table for page indices below maxPageCount
+	pageMap    map[uint64]*[pageSize]V        // Page map for page indices above maxPageCount
+	pageTables []*[pageTableSize]*[pageSize]V // Page tables for page indices below maxPageCount
 }
 
 func (s *PagedLinkStore[V]) Get(key uint64) *V {
 	var page *[pageSize]V
 	pageIndex := key >> pageShift
 	if pageIndex < maxPageCount {
-		if int(pageIndex) >= len(s.pageList) {
-			// Grow the length of the list to pageIndex+1
-			if int(pageIndex) >= cap(s.pageList) {
-				grown := slices.Grow(s.pageList, int(pageIndex)-len(s.pageList)+1)
-				prefault(grown[len(grown):])
-				s.pageList = grown
-			}
-			s.pageList = s.pageList[:pageIndex+1]
+		tableIndex := int(pageIndex >> pageTableShift)
+		if tableIndex >= len(s.pageTables) {
+			s.pageTables = slices.Grow(s.pageTables, tableIndex-len(s.pageTables)+1)[:tableIndex+1]
 		}
-		page = s.pageList[pageIndex]
+		table := s.pageTables[tableIndex]
+		if table == nil {
+			table = newPrefaulted[[pageTableSize]*[pageSize]V]()
+			s.pageTables[tableIndex] = table
+		}
+		page = table[pageIndex&pageTableMask]
 		if page == nil {
 			page = newPrefaulted[[pageSize]V]()
-			s.pageList[pageIndex] = page
+			table[pageIndex&pageTableMask] = page
 		}
 	} else {
 		page = s.pageMap[pageIndex]
@@ -139,8 +148,10 @@ func (s *PagedLinkStore[V]) TryGet(key uint64) *V {
 	var page *[pageSize]V
 	pageIndex := key >> pageShift
 	if pageIndex < maxPageCount {
-		if int(pageIndex) < len(s.pageList) {
-			page = s.pageList[pageIndex]
+		if tableIndex := int(pageIndex >> pageTableShift); tableIndex < len(s.pageTables) {
+			if table := s.pageTables[tableIndex]; table != nil {
+				page = table[pageIndex&pageTableMask]
+			}
 		}
 	} else {
 		page = s.pageMap[pageIndex]

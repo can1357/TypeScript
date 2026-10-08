@@ -680,6 +680,7 @@ type Checker struct {
 	mergedSymbols                               map[*ast.Symbol]*ast.Symbol
 	mergedExportsChecked                        collections.Set[*ast.Symbol]
 	factory                                     ast.NodeFactory
+	ids                                         ast.IdAllocator
 	nodeLinks                                   nodeArenaLinkStore[NodeLinks]
 	signatureLinks                              nodeArenaLinkStore[SignatureLinks]
 	symbolNodeLinks                             nodeLinkStore[SymbolNodeLinks]
@@ -923,6 +924,15 @@ func NewChecker(program Program, tracer *Tracer) (*Checker, *sync.Mutex) {
 
 	c := &Checker{}
 	c.id = nextCheckerID.Add(1)
+	// Link stores assign ids to the nodes and symbols they first see from this checker's blocks.
+	c.nodeLinks.ids = &c.ids
+	c.signatureLinks.ids = &c.ids
+	c.symbolNodeLinks.ids = &c.ids
+	c.typeNodeLinks.ids = &c.ids
+	c.symbolReferenceLinks.ids = &c.ids
+	c.valueSymbolLinks.ids = &c.ids
+	c.mappedSymbolLinks.ids = &c.ids
+	c.aliasSymbolLinks.ids = &c.ids
 	c.tracer = tracer
 	c.program = program
 	c.compilerOptions = program.Options()
@@ -10910,7 +10920,7 @@ func (c *Checker) getInstantiationExpressionType(exprType *Type, node *ast.Node)
 	if exprType == c.silentNeverType || c.isErrorType(exprType) || typeArguments == nil {
 		return exprType
 	}
-	key := InstantiationExpressionKey{nodeId: ast.GetNodeId(node), typeId: exprType.id}
+	key := InstantiationExpressionKey{nodeId: c.ids.NodeId(node), typeId: exprType.id}
 	if cached := c.instantiationExpressionTypes[key]; cached != nil {
 		return cached
 	}

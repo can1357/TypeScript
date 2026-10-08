@@ -43,6 +43,87 @@ func GetSymbolId(symbol *Symbol) SymbolId {
 	return SymbolId(id)
 }
 
+// IdAllocator assigns node and symbol ids for one owner, such as a checker, from blocks of
+// consecutive ids that it reserves from the global counters.
+//
+// Paged link stores index entries by id. With ids taken one at a time from the global counters,
+// concurrent checkers interleave their ids, so each checker's pages hold mostly other checkers'
+// ids: on VS Code with 8 checkers, a gigabyte of link pages was largely empty. Blocks keep the
+// ids an owner assigns dense, and keep owners off the shared counters. Blocks start small and
+// double up to maxIdBlockSize, so that the many short-lived checkers of a language service
+// session, each assigning only a few ids, do not use up ids (and widen page tables) much faster
+// than one-at-a-time assignment would.
+//
+// An IdAllocator is not safe for concurrent use. Ids already assigned, by any owner, are kept.
+// A nil IdAllocator assigns ids from the global counters one at a time, like GetNodeId and
+// GetSymbolId.
+type IdAllocator struct {
+	nodes   idBlock
+	symbols idBlock
+}
+
+const (
+	minIdBlockSize = 16
+	maxIdBlockSize = 1024
+)
+
+type idBlock struct {
+	next uint64
+	end  uint64
+	size uint64 // Size of the last block reserved.
+}
+
+func (b *idBlock) take(counter *atomic.Uint64) uint64 {
+	if b.next == b.end {
+		b.size = min(max(2*b.size, minIdBlockSize), maxIdBlockSize)
+		b.end = counter.Add(b.size) + 1
+		b.next = b.end - b.size
+	}
+	id := b.next
+	b.next++
+	return id
+}
+
+// assignId stores id in field unless another owner assigned an id first, and returns the
+// stored id. A lost race leaves id unused.
+func assignId(field *atomic.Uint64, id uint64) uint64 {
+	if field.CompareAndSwap(0, id) {
+		return id
+	}
+	return field.Load()
+}
+
+// NodeId returns the id of node, first assigning it the next id of a if it has none.
+func (a *IdAllocator) NodeId(node *Node) NodeId {
+	// Kept small enough to inline into every link lookup; assignment is out of line.
+	if id := node.id.Load(); id != 0 {
+		return NodeId(id)
+	}
+	return a.assignNodeId(node)
+}
+
+func (a *IdAllocator) assignNodeId(node *Node) NodeId {
+	if a == nil {
+		return GetNodeId(node)
+	}
+	return NodeId(assignId(&node.id, a.nodes.take(&nextNodeId)))
+}
+
+// SymbolId returns the id of symbol, first assigning it the next id of a if it has none.
+func (a *IdAllocator) SymbolId(symbol *Symbol) SymbolId {
+	if id := symbol.id.Load(); id != 0 {
+		return SymbolId(id)
+	}
+	return a.assignSymbolId(symbol)
+}
+
+func (a *IdAllocator) assignSymbolId(symbol *Symbol) SymbolId {
+	if a == nil {
+		return GetSymbolId(symbol)
+	}
+	return SymbolId(assignId(&symbol.id, a.symbols.take(&nextSymbolId)))
+}
+
 func GetSymbolTable(data *SymbolTable) SymbolTable {
 	if *data == nil {
 		*data = make(SymbolTable)
