@@ -64,3 +64,16 @@ func (s *symbolLinkStore[V]) TryGet(symbol *ast.Symbol) *V {
 	}
 	return s.links.TryGet(id)
 }
+
+// Peek is TryGet for lookups that must not assign an id to symbol; see ast.AssignedSymbolId. A
+// symbol without an id has no links.
+func (s *symbolLinkStore[V]) Peek(symbol *ast.Symbol) *V {
+	id := uint64(ast.AssignedSymbolId(symbol))
+	if id == 0 {
+		return nil
+	}
+	if id >= ast.BlockIdOffset && id < ast.BlockIdOffset+maxPageLinkCount {
+		return s.pages.TryGet(id - ast.BlockIdOffset)
+	}
+	return s.links.TryGet(id)
+}
