@@ -233,6 +233,24 @@ func TestGetCheckerAssociations(t *testing.T) {
 		}
 	})
 
+	t.Run("restreaming joins files placed before their neighbors", func(t *testing.T) {
+		t.Parallel()
+		// Files 0 and 1 share only neighbor 4, which comes later. A single pass balances
+		// them onto different checkers, cutting the edge 1-4 ([0 1 0 1 0 1]). Later passes
+		// see where 4 went and keep the component {0, 1, 4} together.
+		got := getCheckerAssociationsInOrder(
+			[]int{1, 1, 1, 1, 1, 1},
+			[][]int{{4}, {4}, {}, {5}, {0, 1}, {3}},
+			nil,
+			2,
+			1,
+		)
+		want := []int{0, 0, 1, 1, 0, 1}
+		if !slices.Equal(got, want) {
+			t.Fatalf("getCheckerAssociationsInOrder() = %v, want %v", got, want)
+		}
+	})
+
 	t.Run("respects weighted balance cap", func(t *testing.T) {
 		t.Parallel()
 		weights := []int{8, 7, 6, 5, 4, 3, 2, 1}
