@@ -45,6 +45,13 @@ func GetSymbolId(symbol *Symbol) SymbolId {
 	return SymbolId(id)
 }
 
+// AssignedSymbolId returns the id of symbol, or 0 if it has none yet. Lookups that must not
+// assign ids use it: ids feed into internal names of unique symbols, so assigning them changes
+// output.
+func AssignedSymbolId(symbol *Symbol) SymbolId {
+	return SymbolId(symbol.id.Load())
+}
+
 const (
 	BlockIdOffset = 0x1_0000_0000_0000
 	BlockIdSize   = core.LinkPageSize

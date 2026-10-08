@@ -40,3 +40,24 @@ func TestLinkStoreCheckerIsolation(t *testing.T) {
 		}
 	}
 }
+
+func TestSymbolLinkStorePeekAssignsNoIds(t *testing.T) {
+	t.Parallel()
+
+	var store symbolLinkStore[int]
+	var symbol ast.Symbol
+	if store.Peek(&symbol) != nil || ast.AssignedSymbolId(&symbol) != 0 {
+		t.Fatal("Peek found links for or assigned an id to a symbol without one")
+	}
+	value := store.Get(&symbol)
+	*value = 1
+	if store.Peek(&symbol) != value {
+		t.Fatal("Peek missed the links of a symbol with a paged id")
+	}
+	var other ast.Symbol
+	ast.GetSymbolId(&other) // An id from the global counter, outside the paged range.
+	*store.Get(&other) = 2
+	if got := store.Peek(&other); got == nil || *got != 2 {
+		t.Fatal("Peek missed the links of a symbol with an unpaged id")
+	}
+}
