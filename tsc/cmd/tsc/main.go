@@ -28,6 +28,6 @@ func runMain() int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	result := execute.CommandLine(ctx, newSystem(), args, nil)
+	result := execute.CommandLine(ctx, &batchSys{newSystem()}, args, nil)
 	return int(result.Status)
 }

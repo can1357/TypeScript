@@ -50,6 +50,13 @@ func stopTracing(sys tsc.System, tr *tracing.Tracing) {
 	}
 }
 
+func prepareBatchCompilation(sys tsc.System) func() {
+	if batch, ok := sys.(tsc.BatchSystem); ok {
+		return batch.BeforeBatchCompilation()
+	}
+	return func() {}
+}
+
 func CommandLine(ctx context.Context, sys tsc.System, commandLineArgs []string, testing tsc.CommandLineTesting) tsc.CommandLineResult {
 	if len(commandLineArgs) > 0 {
 		switch strings.ToLower(commandLineArgs[0]) {
@@ -110,6 +117,10 @@ func tscBuildCompilation(ctx context.Context, sys tsc.System, buildCommand *tsop
 		tsc.PrintVersion(sys, locale)
 		tsc.PrintBuildHelp(sys, locale, tsoptions.BuildOpts)
 		return tsc.CommandLineResult{Status: tsc.ExitStatusSuccess}
+	}
+
+	if !buildCommand.CompilerOptions.Watch.IsTrue() {
+		defer prepareBatchCompilation(sys)()
 	}
 
 	orchestrator := build.NewOrchestrator(build.Options{
@@ -247,7 +258,9 @@ func tscCompilation(ctx context.Context, sys tsc.System, commandLine *tsoptions.
 		)
 		watcher.start(ctx)
 		return tsc.CommandLineResult{Status: tsc.ExitStatusSuccess, Watcher: watcher}
-	} else if configForCompilation.CompilerOptions().IsIncremental() {
+	}
+	defer prepareBatchCompilation(sys)()
+	if configForCompilation.CompilerOptions().IsIncremental() {
 		return performIncrementalCompilation(
 			ctx,
 			sys,

@@ -34,6 +34,15 @@ type System interface {
 	SinceStart() time.Duration
 }
 
+// BatchSystem is a System that tunes the process for batch (non-watch) compilations, such as the
+// CLI's. Watch sessions and embedded callers keep their runtime policy unchanged.
+type BatchSystem interface {
+	System
+	// BeforeBatchCompilation runs before a batch compilation and returns a function that undoes
+	// its changes.
+	BeforeBatchCompilation() func()
+}
+
 func newContentMapperLogger(sys System) contentmapper.Logger {
 	if value, _ := sys.GetEnvironmentVariable("TS_CONTENT_MAPPER_DEBUG"); value == "" {
 		return nil
