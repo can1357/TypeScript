@@ -55,6 +55,10 @@ func (p *ProfileSession) Stop() {
 		if err != nil {
 			panic(err)
 		}
+		// The profile includes allocations only up to the last completed collection, and batch
+		// compilations may finish without one; two collections publish every sample.
+		runtime.GC()
+		runtime.GC()
 		if err := pprof.Lookup("allocs").WriteTo(memFile, 0); err != nil {
 			panic(err)
 		}

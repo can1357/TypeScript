@@ -74,6 +74,8 @@ func EmitAndReportStatistics(input EmitInput) (CompileAndEmitResult, *Statistics
 func EmitFilesAndReportErrors(input EmitInput) (result CompileAndEmitResult) {
 	result.times = input.CompileTimes
 	ctx := context.Background()
+	batch, _ := input.Sys.(BatchSystem)
+	bound := false
 
 	allDiagnostics := compiler.GetDiagnosticsOfAnyProgram(
 		ctx,
@@ -90,6 +92,10 @@ func EmitFilesAndReportErrors(input EmitInput) (result CompileAndEmitResult) {
 			bindStart := input.Sys.Now()
 			diags := input.ProgramLike.GetBindDiagnostics(ctx, file)
 			result.times.bindTime = input.Sys.Now().Sub(bindStart)
+			if batch != nil && !bound {
+				batch.ProgramBound()
+			}
+			bound = true
 			return diags
 		},
 		func(ctx context.Context, file *ast.SourceFile) []*ast.Diagnostic {
@@ -112,6 +118,10 @@ func EmitFilesAndReportErrors(input EmitInput) (result CompileAndEmitResult) {
 		},
 	)
 
+	if batch != nil && !bound {
+		// Syntax errors skip binding and checking, but not emit.
+		batch.ProgramBound()
+	}
 	emitResult := &compiler.EmitResult{EmitSkipped: true, Diagnostics: []*ast.Diagnostic{}}
 	if !input.ProgramLike.Options().ListFilesOnly.IsTrue() {
 		emitStart := input.Sys.Now()
