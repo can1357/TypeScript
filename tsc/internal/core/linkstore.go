@@ -65,7 +65,7 @@ func (s *PagedArenaLinkStore[V]) allocate(link *uint32) *V {
 	}
 	index := s.count
 	if index&arenaLinkBlockMask == 0 {
-		s.blocks = append(s.blocks, new([arenaLinkBlockSize]V))
+		s.blocks = append(s.blocks, newPrefaulted[[arenaLinkBlockSize]V]())
 	}
 	s.count++
 	*link = s.count
@@ -106,17 +106,22 @@ func (s *PagedLinkStore[V]) Get(key uint64) *V {
 	if pageIndex < maxPageCount {
 		if int(pageIndex) >= len(s.pageList) {
 			// Grow the length of the list to pageIndex+1
-			s.pageList = slices.Grow(s.pageList, int(pageIndex)-len(s.pageList)+1)[:pageIndex+1]
+			if int(pageIndex) >= cap(s.pageList) {
+				grown := slices.Grow(s.pageList, int(pageIndex)-len(s.pageList)+1)
+				prefault(grown[len(grown):])
+				s.pageList = grown
+			}
+			s.pageList = s.pageList[:pageIndex+1]
 		}
 		page = s.pageList[pageIndex]
 		if page == nil {
-			page = new([pageSize]V)
+			page = newPrefaulted[[pageSize]V]()
 			s.pageList[pageIndex] = page
 		}
 	} else {
 		page = s.pageMap[pageIndex]
 		if page == nil {
-			page = new([pageSize]V)
+			page = newPrefaulted[[pageSize]V]()
 			if s.pageMap == nil {
 				s.pageMap = make(map[uint64]*[pageSize]V)
 			}

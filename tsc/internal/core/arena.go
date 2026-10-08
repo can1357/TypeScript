@@ -15,6 +15,7 @@ func (a *Arena[T]) New() *T {
 		nextSize := nextArenaSize(len(a.data))
 		// Use the same trick as slices.Concat; Grow rounds up to the next size class.
 		a.data = slices.Grow[[]T](nil, nextSize)
+		prefault(a.data)
 	}
 	index := len(a.data)
 	a.data = a.data[:index+1]
@@ -36,6 +37,7 @@ func (a *Arena[T]) NewSlice(size int) []T {
 		}
 		// Use the same trick as slices.Concat; Grow rounds up to the next size class.
 		a.data = slices.Grow[[]T](nil, nextSize)
+		prefault(a.data)
 	}
 	newLen := len(a.data) + size
 	slice := a.data[len(a.data):newLen:newLen]
