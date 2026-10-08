@@ -41,6 +41,9 @@ type BatchSystem interface {
 	// BeforeBatchCompilation runs before a batch compilation and returns a function that undoes
 	// its changes.
 	BeforeBatchCompilation() func()
+	// ProgramBound runs once per compiled program, after it is parsed and bound and before it is
+	// checked; when syntax errors skip binding and checking, it runs before emit.
+	ProgramBound()
 }
 
 func newContentMapperLogger(sys System) contentmapper.Logger {
