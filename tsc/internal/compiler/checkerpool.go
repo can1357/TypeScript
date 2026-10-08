@@ -94,6 +94,10 @@ and 8 checkers:
     locality than the stronger settings.
   - 4-checker cutoff: at 2-3 checkers the tight load cap provides enough balance;
     extra source weighting and penalty pressure regressed some projects.
+  - 3 streaming passes: among 1, 3, 4, 6, 9, and 17 passes on VS Code, Sentry,
+    Playwright, TypeORM, Excalidraw, and tRPC with 4 and 8 checkers, 3 passes cut
+    the summed checker time by up to 21% (Sentry, 8 checkers) and the slowest
+    checker by up to 14%; more passes oscillated rather than converged.
 
 These are project-independent operating points, not formulas derived by FENNEL.
 Rebenchmark the vscode, self-compiler, mui-docs, and xstate-main scenarios in the
@@ -105,6 +109,7 @@ const (
 	checkerAssociationBalancePenaltyMultiplier     = 16
 	checkerAssociationPrioritizedSourcePenalty     = 12
 	checkerAssociationStrongBalanceMinCheckerCount = 4
+	checkerAssociationPasses                       = 3
 )
 
 type checkerAssociationPolicy struct {
@@ -163,6 +168,14 @@ func getCheckerAssociationPolicy(totalWeight int, declarationWeight int, checker
 // The 1% slack permits discrete files to pack near the average while preventing
 // affinity from deliberately creating meaningful estimated imbalance. Ties are
 // deterministic.
+//
+// A single streaming pass places early files before most of their neighbors, so
+// it sees only part of each file's affinity. The partition is therefore restreamed
+// (Nishimura and Ugander, "Restreaming Graph Partitioning: Simple Versatile
+// Algorithms for Advanced Balancing", KDD 2013:
+// https://jugander.github.io/papers/kdd13-restream.pdf): each further pass starts from empty
+// loads and streams the files in the same order, but counts a neighbor that is not
+// yet placed in this pass at its checker from the previous pass.
 func getCheckerAssociationsInOrder(fileWeights []int, adjacentFiles [][]int, fileOrder []int, checkerCount int, penaltyMultiplier int) []int {
 	if len(fileWeights) == 0 {
 		return nil
@@ -187,7 +200,25 @@ func getCheckerAssociationsInOrder(fileWeights []int, adjacentFiles [][]int, fil
 	totalWeightFloat := float64(totalWeight)
 	alpha := float64(penaltyMultiplier) * float64(edgeCount/2) * math.Sqrt(float64(checkerCount)) / (totalWeightFloat * math.Sqrt(totalWeightFloat))
 	neighborCounts := make([]int, checkerCount)
+	var previous []int
 
+	for pass := range checkerAssociationPasses {
+		if pass > 0 {
+			previous = slices.Clone(associations)
+			for i := range associations {
+				associations[i] = -1
+			}
+			clear(checkerWeights)
+		}
+		streamCheckerAssociations(fileWeights, adjacentFiles, fileOrder, previous, associations, checkerWeights, neighborCounts, maxCheckerWeight, alpha)
+	}
+	return associations
+}
+
+// streamCheckerAssociations runs one FENNEL pass of getCheckerAssociationsInOrder, placing every file
+// in associations and adding its weight to checkerWeights. A non-nil previous holds the checker of
+// each file from the preceding pass, which stands in for neighbors not yet placed in this pass.
+func streamCheckerAssociations(fileWeights []int, adjacentFiles [][]int, fileOrder []int, previous []int, associations []int, checkerWeights []int, neighborCounts []int, maxCheckerWeight int, alpha float64) {
 	for position := range fileWeights {
 		fileIndex := position
 		if fileOrder != nil {
@@ -198,6 +229,8 @@ func getCheckerAssociationsInOrder(fileWeights []int, adjacentFiles [][]int, fil
 		for _, adjacentFile := range adjacentFiles[fileIndex] {
 			if checkerIndex := associations[adjacentFile]; checkerIndex >= 0 {
 				neighborCounts[checkerIndex]++
+			} else if previous != nil {
+				neighborCounts[previous[adjacentFile]]++
 			}
 		}
 
@@ -229,7 +262,6 @@ func getCheckerAssociationsInOrder(fileWeights []int, adjacentFiles [][]int, fil
 		associations[fileIndex] = bestChecker
 		checkerWeights[bestChecker] += fileWeights[fileIndex]
 	}
-	return associations
 }
 
 // getCheckerAssociationOrder places source files before declarations and
