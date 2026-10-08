@@ -63,11 +63,16 @@ func (s *PagedLinkStore[V]) Get(key uint64) *V {
 	pageIndex := key >> LinkPageShift
 	if int(pageIndex) >= len(s.pages) {
 		// Grow the length of the list to pageIndex+1
-		s.pages = slices.Grow(s.pages, int(pageIndex)-len(s.pages)+1)[:pageIndex+1]
+		if int(pageIndex) >= cap(s.pages) {
+			grown := slices.Grow(s.pages, int(pageIndex)-len(s.pages)+1)
+			prefault(grown[len(grown):])
+			s.pages = grown
+		}
+		s.pages = s.pages[:pageIndex+1]
 	}
 	page := s.pages[pageIndex]
 	if page == nil {
-		page = new([LinkPageSize]uint32)
+		page = newPrefaulted[[LinkPageSize]uint32]()
 		s.pages[pageIndex] = page
 	}
 	link := &page[key&LinkPageMask]
@@ -83,7 +88,7 @@ func (s *PagedLinkStore[V]) allocate(link *uint32) *V {
 	}
 	index := s.count
 	if index&linkBlockMask == 0 {
-		s.blocks = append(s.blocks, new([linkBlockSize]V))
+		s.blocks = append(s.blocks, newPrefaulted[[linkBlockSize]V]())
 	}
 	s.count++
 	*link = s.count
