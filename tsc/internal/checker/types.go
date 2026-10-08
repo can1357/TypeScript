@@ -953,9 +953,12 @@ type memberLayout struct {
 
 type StructuredType struct {
 	ConstrainedType
-	members            ast.SymbolTable
-	memberLayout       *memberLayout
-	properties         []*ast.Symbol
+	members      ast.SymbolTable
+	memberLayout *memberLayout
+	properties   []*ast.Symbol
+	// While lazyMembers is set, a nil entry of properties stands for the instantiation of the
+	// declared member at the same index, which is created on first use.
+	lazyMembers        *lazyMembers
 	signatures         []*Signature // Signatures (call + construct)
 	callSignatureCount int          // Count of call signatures
 	indexInfos         []*IndexInfo
@@ -965,19 +968,51 @@ type StructuredType struct {
 
 func (t *StructuredType) AsStructuredType() *StructuredType { return t }
 
+// lazyMembers holds what an instantiated type with a member layout needs to instantiate its
+// declared members on first use. Most members of instantiated types are never used: on VS Code,
+// 85% of the member symbols that eager instantiation created never had their types resolved.
+type lazyMembers struct {
+	// declared holds the declared members in layout order, nil at the indices of inherited
+	// members; it is shared by the instantiations of a type.
+	declared []*ast.Symbol
+	mapper   *TypeMapper
+}
+
 func (t *StructuredType) member(name string) *ast.Symbol {
 	if t.memberLayout != nil {
 		if index, ok := t.memberLayout.indices[name]; ok {
-			return t.properties[index]
+			return t.property(index)
 		}
 		return nil
 	}
 	return t.members[name]
 }
 
+// property returns the property at index of a type with a member layout, instantiating it first
+// if it is pending.
+func (t *StructuredType) property(index int) *ast.Symbol {
+	symbol := t.properties[index]
+	if symbol == nil && t.lazyMembers != nil {
+		symbol = t.checker.newInstantiatedSymbol(t.lazyMembers.declared[index], t.lazyMembers.mapper)
+		t.properties[index] = symbol
+	}
+	return symbol
+}
+
+// instantiateMembers instantiates every pending member.
+func (t *StructuredType) instantiateMembers() {
+	if t.lazyMembers != nil {
+		for i := range t.properties {
+			t.property(i)
+		}
+		t.lazyMembers = nil
+	}
+}
+
 // Materialize only for callers that need an actual table. Switch subsequent
 // lookups to that table so mutations through a table alias remain observable.
 func (t *StructuredType) memberTable() ast.SymbolTable {
+	t.instantiateMembers()
 	if t.memberLayout != nil {
 		t.members = make(ast.SymbolTable, len(t.properties))
 		for i, symbol := range t.properties {
@@ -997,6 +1032,7 @@ func (t *StructuredType) ConstructSignatures() []*Signature {
 }
 
 func (t *StructuredType) Properties() []*ast.Symbol {
+	t.instantiateMembers()
 	return t.properties
 }
 

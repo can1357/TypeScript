@@ -243,25 +243,32 @@ func TestCompactTypeReferenceMembers(t *testing.T) {
 	data.resolvedBaseTypes = []*Type{base}
 	parameter := c.newTypeParameter(nil)
 	argument := c.newIntrinsicType(TypeFlagsAny, "any")
-	resolve := func() *Type {
+	resolve := func(wantInstantiated uint32) *Type {
 		t.Helper()
 		result := c.newObjectType(ObjectFlagsReference, symbol)
 		result.AsTypeReference().target = target
 		before := c.SymbolCount
 		c.resolveObjectTypeMembers(result, target, []*Type{parameter}, []*Type{argument})
-		if c.SymbolCount-before != 2 {
-			t.Fatal("each declared named symbol must be instantiated exactly once")
+		if c.SymbolCount-before != wantInstantiated {
+			t.Fatalf("resolution instantiated %d symbols, want %d", c.SymbolCount-before, wantInstantiated)
 		}
 		return result
 	}
-	first := resolve()
+	first := resolve(2)
 	if first.AsStructuredType().members == nil || first.AsStructuredType().memberLayout != nil {
 		t.Fatal("the first resolution must use the map path to establish a canonical layout")
 	}
-	second := resolve()
+	// Matching instances defer their declared members to first use.
+	second := resolve(0)
 	resolved := second.AsStructuredType()
 	if resolved.members != nil || resolved.memberLayout == nil {
 		t.Fatal("matching reference instances must not allocate a member table")
+	}
+	before := c.SymbolCount
+	resolved.Properties()
+	resolved.Properties()
+	if c.SymbolCount-before != 2 {
+		t.Fatalf("first use instantiated %d symbols, want each declared named symbol exactly once", c.SymbolCount-before)
 	}
 	if resolved.member("inherited") != baseMembers["inherited"] || resolved.member("override") == baseMembers["override"] {
 		t.Fatal("inherited members and declared overrides must be selected exactly as before")
@@ -291,7 +298,7 @@ func TestCompactTypeReferenceMembers(t *testing.T) {
 	}
 	baseMembers["new"] = newTestSymbol(ast.SymbolFlagsProperty, "new")
 	c.setStructuredTypeMembers(base, baseMembers, nil, nil, nil)
-	changed := resolve().AsStructuredType()
+	changed := resolve(2).AsStructuredType()
 	if changed.memberLayout != nil || changed.members == nil || changed.member("new") != baseMembers["new"] {
 		t.Fatal("a new inherited name must fall back to an exact member table")
 	}
@@ -300,7 +307,7 @@ func TestCompactTypeReferenceMembers(t *testing.T) {
 	baseMembers["inherited"] = newTestSymbol(ast.SymbolFlagsProperty, oldInherited.Name(), declared["own"].Declarations()...)
 	baseMembers["inherited"].SetValueDeclaration(oldInherited.ValueDeclaration())
 	c.setStructuredTypeMembers(base, baseMembers, nil, nil, nil)
-	changed = resolve().AsStructuredType()
+	changed = resolve(2).AsStructuredType()
 	c.resolveObjectTypeMembers(target, target, []*Type{parameter}, []*Type{parameter})
 	if target.AsStructuredType().memberLayout != nil || target.AsStructuredType().member(ast.InternalSymbolNameCall) != declared[ast.InternalSymbolNameCall] {
 		t.Fatal("non-instantiated targets must retain their full original member table")
@@ -323,7 +330,7 @@ func TestMemberLayoutBuilderInheritedSelection(t *testing.T) {
 	builder.set(nonValue.Name(), nonValue)
 	builder.set(original.Name(), original)
 	builder.addInheritedMembers([]*ast.Symbol{value, ignored, inherited})
-	if !c.membersMatchLayout(builder.properties, layout, false) || builder.members != nil ||
+	if !c.membersMatchLayout(&builder, false) || builder.members != nil ||
 		builder.member(value.Name()) != value || builder.member(original.Name()) != original || builder.member(inherited.Name()) != inherited {
 		t.Fatal("layout inheritance must replace non-values, retain declared values, and add missing members")
 	}
@@ -331,11 +338,11 @@ func TestMemberLayoutBuilderInheritedSelection(t *testing.T) {
 		t.Fatal("an absent layout name must not select index zero")
 	}
 	builder.properties[0] = newTestSymbol(ast.SymbolFlagsAlias, value.Name())
-	if c.membersMatchLayout(builder.properties, layout, false) {
+	if c.membersMatchLayout(&builder, false) {
 		t.Fatal("alias-only values must preserve map-path resolution timing")
 	}
 	builder.properties[0] = nil
-	if c.membersMatchLayout(builder.properties, layout, false) {
+	if c.membersMatchLayout(&builder, false) {
 		t.Fatal("a missing layout slot must reject compaction")
 	}
 	table := builder.memberTable()

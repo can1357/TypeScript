@@ -1,0 +1,34 @@
+//// [tests/cases/compiler/declarationEmitAbstractConstructorGenericInstances.ts] ////
+
+=== declarationEmitAbstractConstructorGenericInstances.ts ===
+// Several instances of a generic class merged with an abstract construct signature type.
+type C<T> = abstract new () => T;
+>C : Symbol(C, Decl(declarationEmitAbstractConstructorGenericInstances.ts, 0, 0))
+>T : Symbol(T, Decl(declarationEmitAbstractConstructorGenericInstances.ts, 1, 7))
+>T : Symbol(T, Decl(declarationEmitAbstractConstructorGenericInstances.ts, 1, 7))
+
+export function make<T>() {
+>make : Symbol(make, Decl(declarationEmitAbstractConstructorGenericInstances.ts, 1, 33))
+>T : Symbol(T, Decl(declarationEmitAbstractConstructorGenericInstances.ts, 2, 21))
+
+    class I { foo!: T; }
+>I : Symbol(I, Decl(declarationEmitAbstractConstructorGenericInstances.ts, 2, 27), Decl(declarationEmitAbstractConstructorGenericInstances.ts, 3, 24))
+>foo : Symbol(I.foo, Decl(declarationEmitAbstractConstructorGenericInstances.ts, 3, 13))
+>T : Symbol(T, Decl(declarationEmitAbstractConstructorGenericInstances.ts, 2, 21))
+
+    interface I extends C<T> {}
+>I : Symbol(I, Decl(declarationEmitAbstractConstructorGenericInstances.ts, 2, 27), Decl(declarationEmitAbstractConstructorGenericInstances.ts, 3, 24))
+>C : Symbol(C, Decl(declarationEmitAbstractConstructorGenericInstances.ts, 0, 0))
+>T : Symbol(T, Decl(declarationEmitAbstractConstructorGenericInstances.ts, 2, 21))
+
+    return null as unknown as I;
+>I : Symbol(I, Decl(declarationEmitAbstractConstructorGenericInstances.ts, 2, 27), Decl(declarationEmitAbstractConstructorGenericInstances.ts, 3, 24))
+}
+export const a = make<number>();
+>a : Symbol(a, Decl(declarationEmitAbstractConstructorGenericInstances.ts, 7, 12))
+>make : Symbol(make, Decl(declarationEmitAbstractConstructorGenericInstances.ts, 1, 33))
+
+export const b = make<string>();
+>b : Symbol(b, Decl(declarationEmitAbstractConstructorGenericInstances.ts, 8, 12))
+>make : Symbol(make, Decl(declarationEmitAbstractConstructorGenericInstances.ts, 1, 33))
+

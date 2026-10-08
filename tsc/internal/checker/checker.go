@@ -590,6 +590,7 @@ type Checker struct {
 	fileIndexMap                                map[*ast.SourceFile]int
 	symbolSortKeys                              []symbolSortKey
 	instantiatedPropertyOrders                  map[*Type]*memberLayout
+	layoutDeclaredMembers                       map[*memberLayout][]*ast.Symbol
 	compareSymbols                              func(*ast.Symbol, *ast.Symbol) int
 	compareSymbolChains                         func([]*ast.Symbol, []*ast.Symbol) int
 	TypeCount                                   uint32
@@ -19325,7 +19326,7 @@ func (c *Checker) getPropertiesOfType(t *Type) []*ast.Symbol {
 
 func (c *Checker) getPropertiesOfObjectType(t *Type) []*ast.Symbol {
 	if t.flags&TypeFlagsObject != 0 {
-		return c.resolveStructuredTypeMembers(t).properties
+		return c.resolveStructuredTypeMembers(t).Properties()
 	}
 	return nil
 }
@@ -19628,12 +19629,13 @@ func (c *Checker) resolveObjectTypeMembers(t *Type, source *Type, typeParameters
 	}
 	if instantiated {
 		partition := t.symbol != nil && t.symbol.Flags()&(ast.SymbolFlagsClass|ast.SymbolFlagsInterface) != 0
-		if memberBuilder.layout != nil && c.membersMatchLayout(memberBuilder.properties, memberBuilder.layout, partition) {
+		if memberBuilder.layout != nil && c.membersMatchLayout(&memberBuilder, partition) {
 			t.objectFlags |= ObjectFlagsMembersResolved
 			data := t.AsStructuredType()
 			data.members = nil
 			data.memberLayout = memberBuilder.layout
 			data.properties = memberBuilder.properties
+			data.lazyMembers = memberBuilder.lazy
 			setStructuredTypeSignatures(data, callSignatures, constructSignatures, indexInfos)
 			return
 		}
@@ -21205,7 +21207,7 @@ func (c *Checker) resolveAnonymousTypeMembers(t *Type) {
 		if baseConstructorIndexInfo != nil {
 			indexInfos = append(indexInfos, baseConstructorIndexInfo)
 		}
-		if symbol.Flags()&ast.SymbolFlagsEnum != 0 && (c.getDeclaredTypeOfSymbol(symbol).flags&TypeFlagsEnum != 0 || core.Some(d.properties, func(prop *ast.Symbol) bool {
+		if symbol.Flags()&ast.SymbolFlagsEnum != 0 && (c.getDeclaredTypeOfSymbol(symbol).flags&TypeFlagsEnum != 0 || core.Some(d.Properties(), func(prop *ast.Symbol) bool {
 			return c.getTypeOfSymbol(prop).flags&TypeFlagsNumberLike != 0
 		})) {
 			indexInfos = append(indexInfos, c.enumNumberIndexInfo)
@@ -21243,7 +21245,10 @@ func (c *Checker) createInstantiatedSymbolTable(symbols []*ast.Symbol, m *TypeMa
 }
 
 type memberTableBuilder struct {
-	layout     *memberLayout
+	layout *memberLayout
+	// lazy is set while declared members are pending instantiation (see lazyMembers).
+	lazy       *lazyMembers
+	c          *Checker
 	properties []*ast.Symbol
 	members    ast.SymbolTable
 }
@@ -21251,14 +21256,31 @@ type memberTableBuilder struct {
 func (b *memberTableBuilder) member(name string) *ast.Symbol {
 	if b.layout != nil {
 		if index, ok := b.layout.indices[name]; ok {
-			return b.properties[index]
+			return b.memberAt(index)
 		}
 		return nil
 	}
 	return b.members[name]
 }
 
+// memberAt returns the member at index of the layout, or for a pending declared member the
+// declared symbol, which has the flags, name and declarations of its instantiation.
+func (b *memberTableBuilder) memberAt(index int) *ast.Symbol {
+	if symbol := b.properties[index]; symbol != nil || b.lazy == nil {
+		return symbol
+	}
+	return b.lazy.declared[index]
+}
+
 func (b *memberTableBuilder) memberTable() ast.SymbolTable {
+	if b.lazy != nil {
+		for i, symbol := range b.properties {
+			if symbol == nil && b.lazy.declared[i] != nil {
+				b.properties[i] = b.c.newInstantiatedSymbol(b.lazy.declared[i], b.lazy.mapper)
+			}
+		}
+		b.lazy = nil
+	}
 	if b.layout != nil {
 		b.members = make(ast.SymbolTable, len(b.properties))
 		for i, symbol := range b.properties {
@@ -21296,21 +21318,56 @@ func (b *memberTableBuilder) addInheritedMembers(symbols []*ast.Symbol) {
 	}
 }
 
+// instantiateSymbolTable instantiates the named members of symbols with m. With a layout of the
+// declared members, the members are only instantiated on first use (lazyMembers).
 func (c *Checker) instantiateSymbolTable(symbols ast.SymbolTable, m *TypeMapper, layout *memberLayout) memberTableBuilder {
-	result := memberTableBuilder{layout: layout}
+	result := memberTableBuilder{layout: layout, c: c}
 	if layout != nil {
 		result.properties = make([]*ast.Symbol, len(layout.keys))
+		if declared := c.getLayoutDeclaredMembers(symbols, layout); declared != nil {
+			// Members that instantiate to themselves are decided now, as eager instantiation would:
+			// by the time a member is first used, its type may have been resolved meanwhile.
+			for i, symbol := range declared {
+				if symbol != nil && c.instantiatesToItself(symbol, m) {
+					result.properties[i] = symbol
+				}
+			}
+			result.lazy = &lazyMembers{declared: declared, mapper: m}
+			return result
+		}
 	} else if len(symbols) != 0 {
 		result.members = make(ast.SymbolTable, len(symbols))
 	}
-	// Preserve the declared-table traversal and symbol creation order. A layout
-	// changes only where the instantiated symbols are stored, not when they exist.
 	for id, symbol := range symbols {
 		if c.isNamedMember(symbol, id) {
 			result.set(id, c.instantiateSymbol(symbol, m))
 		}
 	}
 	return result
+}
+
+// getLayoutDeclaredMembers returns the named members of symbols, the declared members of the
+// type with the given layout, in layout order, or nil when a named member is not in the layout.
+func (c *Checker) getLayoutDeclaredMembers(symbols ast.SymbolTable, layout *memberLayout) []*ast.Symbol {
+	if declared, ok := c.layoutDeclaredMembers[layout]; ok {
+		return declared
+	}
+	declared := make([]*ast.Symbol, len(layout.keys))
+	for id, symbol := range symbols {
+		if c.isNamedMember(symbol, id) {
+			index, ok := layout.indices[id]
+			if !ok {
+				declared = nil
+				break
+			}
+			declared[index] = symbol
+		}
+	}
+	if c.layoutDeclaredMembers == nil {
+		c.layoutDeclaredMembers = make(map[*memberLayout][]*ast.Symbol)
+	}
+	c.layoutDeclaredMembers[layout] = declared
+	return declared
 }
 
 func (c *Checker) getNameTypeOfSymbol(symbol *ast.Symbol) *Type {
@@ -21324,22 +21381,33 @@ func (c *Checker) instantiateSymbol(symbol *ast.Symbol, m *TypeMapper) *ast.Symb
 	if symbol == nil {
 		return nil
 	}
-	if m != nil && m.MapsThisOnly() && isThisless(symbol) {
+	if c.instantiatesToItself(symbol, m) {
 		return symbol
+	}
+	return c.newInstantiatedSymbol(symbol, m)
+}
+
+// instantiatesToItself reports whether instantiateSymbol returns symbol itself for m. The result
+// depends on whether the type of symbol is resolved yet; lazily instantiated members decide it
+// when they are created, as eager instantiation does (see instantiateSymbolTable).
+func (c *Checker) instantiatesToItself(symbol *ast.Symbol, m *TypeMapper) bool {
+	if m != nil && m.MapsThisOnly() && isThisless(symbol) {
+		return true
 	}
 	// Reading the source symbol must not allocate an otherwise empty links entry.
 	links := c.valueSymbolLinks.TryGet(symbol)
 	// If the type of the symbol is already resolved, and if that type could not possibly
-	// be affected by instantiation, simply return the symbol itself.
+	// be affected by instantiation, the symbol itself is the instantiation.
 	if links != nil && links.resolvedType != nil && !c.couldContainTypeVariables(links.resolvedType) {
-		if symbol.Flags()&ast.SymbolFlagsSetAccessor == 0 {
-			return symbol
-		}
 		// If we're a setter, check writeType.
-		if links.writeType != nil && !c.couldContainTypeVariables(links.writeType) {
-			return symbol
-		}
+		return symbol.Flags()&ast.SymbolFlagsSetAccessor == 0 || links.writeType != nil && !c.couldContainTypeVariables(links.writeType)
 	}
+	return false
+}
+
+// newInstantiatedSymbol creates the instantiation of symbol with m.
+func (c *Checker) newInstantiatedSymbol(symbol *ast.Symbol, m *TypeMapper) *ast.Symbol {
+	links := c.valueSymbolLinks.TryGet(symbol)
 	if symbol.CheckFlags()&ast.CheckFlagsInstantiated != 0 {
 		// If symbol being instantiated is itself a instantiation, fetch the original target and combine the
 		// type mappers. This ensures that original type identities are properly preserved and that aliases
@@ -22856,9 +22924,9 @@ func (c *Checker) memberMatchesOrder(symbol *ast.Symbol, key memberOrderKey, par
 		(!partition || symbol.ValueDeclaration() == key.valueDeclaration)
 }
 
-func (c *Checker) membersMatchLayout(properties []*ast.Symbol, layout *memberLayout, partition bool) bool {
-	for i, key := range layout.keys {
-		symbol := properties[i]
+func (c *Checker) membersMatchLayout(b *memberTableBuilder, partition bool) bool {
+	for i, key := range b.layout.keys {
+		symbol := b.memberAt(i)
 		// Alias-only value resolution can re-enter the checker. Keep such members
 		// on the map path, whose members-resolved timing is unchanged.
 		if symbol == nil || symbol.Flags()&ast.SymbolFlagsValue == 0 || !c.memberMatchesOrder(symbol, key, partition) {
@@ -28200,7 +28268,7 @@ func (c *Checker) getPropertyTypeForIndexType(originalObjectType *Type, objectTy
 					c.addDiagnostic(createDiagnosticForNode(accessExpression, diagnostics.Property_0_does_not_exist_on_type_1, indexType.AsLiteralType().value, c.TypeToString(objectType)))
 					return c.undefinedType
 				} else if indexType.flags&(TypeFlagsNumber|TypeFlagsString) != 0 {
-					types := core.Map(objectType.AsStructuredType().properties, func(prop *ast.Symbol) *Type {
+					types := core.Map(objectType.AsStructuredType().Properties(), func(prop *ast.Symbol) *Type {
 						return c.getTypeOfSymbol(prop)
 					})
 					return c.getUnionType(append(types, c.undefinedType))
