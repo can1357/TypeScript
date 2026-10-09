@@ -182,8 +182,9 @@ func processAllProgramFiles(
 		defaultLibraryPath: opts.Host.DefaultLibraryPath(),
 		caseSensitivity:    opts.Host.FS().CaseSensitivity(),
 		filesParser: &filesParser{
-			wg:       core.NewWorkGroup(singleThreaded),
-			maxDepth: maxNodeModuleJsDepth,
+			wg:             core.NewWorkGroup(singleThreaded),
+			singleThreaded: singleThreaded,
+			maxDepth:       maxNodeModuleJsDepth,
 		},
 		rootTasks:           make([]*parseTask, 0, len(rootFiles)+len(compilerOptions.Lib)),
 		supportedExtensions: supportedExtensions,

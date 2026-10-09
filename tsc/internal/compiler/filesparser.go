@@ -232,6 +232,7 @@ func (t *parseTask) addSubTask(ref resolvedRef, libFile *LibFile) {
 
 type filesParser struct {
 	wg             core.WorkGroup
+	singleThreaded bool
 	taskDataByPath collections.SyncMap[tspath.PathKey, *parseTaskData]
 	maxDepth       int
 }
@@ -266,7 +267,27 @@ type parseTaskData struct {
 }
 
 func (w *filesParser) parse(loader *fileLoader, tasks []*parseTask) {
-	w.start(loader, tasks, 0)
+	// Default library files are among the largest files of most programs (lib.dom.d.ts is the
+	// largest of them), and they reference further libraries only once parsed. Started after
+	// hundreds of root files, their parses finished last. Parallel tasks run in any order, so
+	// starting the library tasks first changes nothing but when the parses end; a single thread
+	// runs the tasks in order, which traces show. start writes back through the slice, so the
+	// parts must share tasks' backing array.
+	libStart := -1
+	if !w.singleThreaded {
+		libStart = slices.IndexFunc(tasks, func(task *parseTask) bool { return task.libFile != nil })
+	}
+	if libStart < 0 {
+		w.start(loader, tasks, 0)
+	} else {
+		libEnd := libStart + 1
+		for libEnd < len(tasks) && tasks[libEnd].libFile != nil {
+			libEnd++
+		}
+		w.start(loader, tasks[libStart:libEnd], 0)
+		w.start(loader, tasks[:libStart], 0)
+		w.start(loader, tasks[libEnd:], 0)
+	}
 	w.wg.RunAndWait()
 }
 
