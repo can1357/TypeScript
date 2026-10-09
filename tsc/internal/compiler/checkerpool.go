@@ -2,10 +2,12 @@ package compiler
 
 import (
 	"context"
+	"maps"
 	"math"
 	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"github.com/microsoft/TypeScript/tsc/internal/ast"
 	"github.com/microsoft/TypeScript/tsc/internal/checker"
@@ -32,7 +34,22 @@ type checkerPool struct {
 	createCheckersOnce sync.Once
 	checkers           []*checker.Checker
 	locks              []*sync.Mutex
-	fileAssociations   map[*ast.SourceFile]*checker.Checker
+	// fileAssociations holds the checker of each file. The first checking pass with several
+	// checkers replaces it with the checkers it ended up using (see forEachCheckerScheduleDo), so
+	// that later passes find the caches it built; lookups load it once.
+	fileAssociations atomic.Pointer[checkerAssociations]
+	// fileWeights holds the estimated work of each file, for scheduling (see checkerSchedule).
+	fileWeights map[*ast.SourceFile]int
+	// scheduled is set once a checking pass has distributed files dynamically.
+	scheduled atomic.Bool
+}
+
+// checkerAssociations maps each file of a program to its checker.
+type checkerAssociations map[*ast.SourceFile]*checker.Checker
+
+// checkerFor returns the checker associated with file.
+func (p *checkerPool) checkerFor(file *ast.SourceFile) *checker.Checker {
+	return (*p.fileAssociations.Load())[file]
 }
 
 var _ CheckerPool = (*checkerPool)(nil)
@@ -384,12 +401,12 @@ func (p *checkerPool) GetChecker(ctx context.Context, file *ast.SourceFile) (*ch
 // e.g. for read-only operations like obtaining an emit resolver.
 func (p *checkerPool) getCheckerForFileNonExclusive(file *ast.SourceFile) (*checker.Checker, func()) {
 	p.createCheckers()
-	return p.fileAssociations[file], noop
+	return p.checkerFor(file), noop
 }
 
 func (p *checkerPool) getCheckerForFileExclusive(ctx context.Context, file *ast.SourceFile) (*checker.Checker, func()) {
 	p.createCheckers()
-	c := p.fileAssociations[file]
+	c := p.checkerFor(file)
 	idx := slices.Index(p.checkers, c)
 	p.locks[idx].Lock()
 	return c, sync.OnceFunc(func() {
@@ -453,11 +470,16 @@ func (p *checkerPool) createCheckers() {
 			adjacentFiles := p.getImportAdjacency()
 			fileOrder := getCheckerAssociationOrder(fileWeights, isDeclarationFile, policy.prioritizeSourceFiles)
 			associations = getCheckerAssociationsInOrder(fileWeights, adjacentFiles, fileOrder, checkerCount, policy.balancePenaltyMultiplier)
+			p.fileWeights = make(map[*ast.SourceFile]int, len(p.program.files))
+			for i, file := range p.program.files {
+				p.fileWeights[file] = fileWeights[i]
+			}
 		}
-		p.fileAssociations = make(map[*ast.SourceFile]*checker.Checker, len(p.program.files))
+		fileAssociations := make(checkerAssociations, len(p.program.files))
 		for i, file := range p.program.files {
-			p.fileAssociations[file] = p.checkers[associations[i]]
+			fileAssociations[file] = p.checkers[associations[i]]
 		}
+		p.fileAssociations.Store(&fileAssociations)
 	})
 }
 
@@ -514,24 +536,76 @@ func (p *checkerPool) GetGlobalDiagnostics() []*ast.Diagnostic {
 
 // forEachCheckerGroupDo runs one task per checker in parallel. Each task iterates
 // the provided files, processing only those assigned to its checker. Within each
-// checker's set, files are visited in their original order.
+// checker's set, files are visited in their original order. The first pass with
+// several checkers moves files between the sets as it goes (see checkerSchedule).
 func (p *checkerPool) forEachCheckerGroupDo(ctx context.Context, files []*ast.SourceFile, singleThreaded bool, cb func(c *checker.Checker, fileIndex int, file *ast.SourceFile)) {
 	p.createCheckers()
 
 	checkerCount := len(p.checkers)
+	if !singleThreaded && checkerCount > 1 && p.scheduled.CompareAndSwap(false, true) {
+		p.forEachCheckerScheduleDo(files, cb)
+		return
+	}
+	fileAssociations := *p.fileAssociations.Load()
 	wg := core.NewWorkGroup(singleThreaded)
 	for checkerIdx := range checkerCount {
 		wg.Queue(func() {
 			p.locks[checkerIdx].Lock()
 			defer p.locks[checkerIdx].Unlock()
 			for i, file := range files {
-				if checker := p.checkers[checkerIdx]; checker == p.fileAssociations[file] {
+				if checker := p.checkers[checkerIdx]; checker == fileAssociations[file] {
 					cb(checker, i, file)
 				}
 			}
 		})
 	}
 	wg.RunAndWait()
+}
+
+// forEachCheckerScheduleDo runs cb for each file on the checker a checkerSchedule assigns it to, and
+// associates the files with those checkers.
+func (p *checkerPool) forEachCheckerScheduleDo(files []*ast.SourceFile, cb func(c *checker.Checker, fileIndex int, file *ast.SourceFile)) {
+	checkerIndices := make(map[*checker.Checker]int, len(p.checkers))
+	for i, c := range p.checkers {
+		checkerIndices[c] = i
+	}
+	fileAssociations := *p.fileAssociations.Load()
+	associations := make([]int, len(files))
+	weights := make([]int, len(files))
+	for i, file := range files {
+		associations[i] = checkerIndices[fileAssociations[file]]
+		weights[i] = p.fileWeights[file]
+	}
+	schedule := newCheckerSchedule(associations, weights, len(p.checkers))
+	wg := core.NewWorkGroup(false /*singleThreaded*/)
+	for checkerIdx, c := range p.checkers {
+		wg.Queue(func() {
+			p.locks[checkerIdx].Lock()
+			defer p.locks[checkerIdx].Unlock()
+			// Finishing also releases checkers waiting for this one if cb panics.
+			defer schedule.finish(checkerIdx)
+			c.ObserveWork(checkerWorkPublishInterval, func(work uint64) {
+				schedule.publish(checkerIdx, work)
+			})
+			defer c.ObserveWork(0, nil)
+			for {
+				i, ok := schedule.start(checkerIdx, c.Work())
+				if !ok {
+					break
+				}
+				cb(c, i, files[i])
+			}
+		})
+	}
+	wg.RunAndWait()
+	// Passes running concurrently keep the associations they loaded.
+	scheduledAssociations := maps.Clone(fileAssociations)
+	for i, checkerIdx := range schedule.movedTo {
+		if checkerIdx >= 0 {
+			scheduledAssociations[files[i]] = p.checkers[checkerIdx]
+		}
+	}
+	p.fileAssociations.Store(&scheduledAssociations)
 }
 
 func noop() {}
