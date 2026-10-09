@@ -2658,6 +2658,7 @@ func (r *Relater) isRelatedTo(source *Type, target *Type, recursionFlags Recursi
 }
 
 func (r *Relater) isRelatedToEx(originalSource *Type, originalTarget *Type, recursionFlags RecursionFlags, reportErrors bool, headMessage *diagnostics.Message, intersectionState IntersectionState) Ternary {
+	r.c.addWork(workPerRelation)
 	if originalSource == originalTarget {
 		return TernaryTrue
 	}
