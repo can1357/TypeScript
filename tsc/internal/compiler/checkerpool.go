@@ -38,8 +38,11 @@ type checkerPool struct {
 	// checkers replaces it with the checkers it ended up using (see forEachCheckerScheduleDo), so
 	// that later passes find the caches it built; lookups load it once.
 	fileAssociations atomic.Pointer[checkerAssociations]
-	// fileWeights holds the estimated work of each file, for scheduling (see checkerSchedule).
-	fileWeights map[*ast.SourceFile]int
+	// partitionOnce guards associations, the checker index of each program file, and fileWeights,
+	// the estimated work of each file for scheduling (see partitionFiles and checkerSchedule).
+	partitionOnce sync.Once
+	associations  []int
+	fileWeights   map[*ast.SourceFile]int
 	// scheduled is set once a checking pass has distributed files dynamically.
 	scheduled atomic.Bool
 }
@@ -436,7 +439,22 @@ func (p *checkerPool) createCheckers() {
 
 		wg.RunAndWait()
 
-		associations := make([]int, len(p.program.files))
+		p.partitionFiles()
+		fileAssociations := make(checkerAssociations, len(p.program.files))
+		for i, file := range p.program.files {
+			fileAssociations[file] = p.checkers[p.associations[i]]
+		}
+		p.fileAssociations.Store(&fileAssociations)
+	})
+}
+
+// partitionFiles associates each file of the program with a checker (see
+// getCheckerAssociationsInOrder). It only reads the files and their imports, so
+// Program.BindSourceFiles runs it while it binds the files.
+func (p *checkerPool) partitionFiles() {
+	p.partitionOnce.Do(func() {
+		checkerCount := len(p.checkers)
+		p.associations = make([]int, len(p.program.files))
 		if checkerCount > 1 {
 			baseWeights := make([]int, len(p.program.files))
 			importCounts := make([]int, len(p.program.files))
@@ -469,17 +487,12 @@ func (p *checkerPool) createCheckers() {
 			fileWeights := getCheckerAssociationWeights(baseWeights, importCounts)
 			adjacentFiles := p.getImportAdjacency()
 			fileOrder := getCheckerAssociationOrder(fileWeights, isDeclarationFile, policy.prioritizeSourceFiles)
-			associations = getCheckerAssociationsInOrder(fileWeights, adjacentFiles, fileOrder, checkerCount, policy.balancePenaltyMultiplier)
+			p.associations = getCheckerAssociationsInOrder(fileWeights, adjacentFiles, fileOrder, checkerCount, policy.balancePenaltyMultiplier)
 			p.fileWeights = make(map[*ast.SourceFile]int, len(p.program.files))
 			for i, file := range p.program.files {
 				p.fileWeights[file] = fileWeights[i]
 			}
 		}
-		fileAssociations := make(checkerAssociations, len(p.program.files))
-		for i, file := range p.program.files {
-			fileAssociations[file] = p.checkers[associations[i]]
-		}
-		p.fileAssociations.Store(&fileAssociations)
 	})
 }
 
