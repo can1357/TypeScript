@@ -600,6 +600,10 @@ type Checker struct {
 	SymbolCount                                 uint32
 	SignatureCount                              uint32
 	TotalInstantiationCount                     uint32
+	work                                        uint64            // Estimated work so far; see Work.
+	nextWorkReport                              uint64            // Work at which to call workObserver next; see ObserveWork.
+	workInterval                                uint64            // Work between calls to workObserver.
+	workObserver                                func(work uint64) // See ObserveWork.
 	instantiationCount                          uint32
 	instantiationStack                          []*Type
 	conditionalConstraintDepth                  uint32
@@ -2281,6 +2285,7 @@ func (c *Checker) checkSourceFile(ctx context.Context, sourceFile *ast.SourceFil
 		if tr := c.tracer; tr != nil {
 			defer tr.Push(tracing.PhaseCheck, "checkSourceFile", map[string]any{"path": sourceFile.FileName()}, true)()
 		}
+		c.addWork(workPerCheckedFile)
 		// Grammar checking
 		c.checkGrammarSourceFile(sourceFile)
 		c.renamedBindingElementsInTypes = nil
@@ -7941,6 +7946,7 @@ func getUniqueTypeParameterName(typeParameters []*Type, baseName string) string 
 }
 
 func (c *Checker) checkExpressionWorker(node *ast.Node, checkMode CheckMode) *Type {
+	c.addWork(workPerExpression)
 	switch node.Kind {
 	case ast.KindIdentifier:
 		return c.checkIdentifier(node, checkMode)
@@ -14353,6 +14359,7 @@ func (c *Checker) hasParseDiagnostics(sourceFile *ast.SourceFile) bool {
 
 func (c *Checker) newSymbol(flags ast.SymbolFlags, name string) *ast.Symbol {
 	c.SymbolCount++
+	c.addWork(workPerSymbol)
 	result := c.symbolWithDataArena.New().Initialize()
 	result.SetFlags(flags | ast.SymbolFlagsTransient)
 	result.SetName(name)
@@ -14361,6 +14368,7 @@ func (c *Checker) newSymbol(flags ast.SymbolFlags, name string) *ast.Symbol {
 
 func (c *Checker) newSharedDataSymbol(symbol *ast.Symbol) *ast.Symbol {
 	c.SymbolCount++
+	c.addWork(workPerSymbol)
 	result := c.symbolArena.New()
 	result.SetFlags(symbol.Flags() | ast.SymbolFlagsTransient)
 	result.SetSymbolData(symbol)
@@ -19376,6 +19384,7 @@ func (c *Checker) getPropertyOfType(t *Type, name string) *ast.Symbol {
  * @param name a name of property to look up in a given type
  */
 func (c *Checker) getPropertyOfTypeEx(t *Type, name string, skipObjectFunctionPropertyAugment bool, includeTypeOnlyMembers bool) *ast.Symbol {
+	c.addWork(workPerPropertyLookup)
 	t = c.getReducedApparentType(t)
 	switch {
 	case t.flags&TypeFlagsObject != 0:
@@ -19536,6 +19545,7 @@ func (c *Checker) isApplicableIndexType(source *Type, target *Type) bool {
 
 func (c *Checker) resolveStructuredTypeMembers(t *Type) *StructuredType {
 	if t.objectFlags&ObjectFlagsMembersResolved == 0 {
+		c.addWork(workPerMemberResolution)
 		// Some resolutions install empty members before computing the real ones; see typeToStringEx.
 		c.resolvingMembers++
 		switch {
@@ -26047,6 +26057,7 @@ func isUnaryTupleTypeNode(node *ast.Node) bool {
 
 func (c *Checker) newType(flags TypeFlags, objectFlags ObjectFlags, t *Type, kind typeKind) *Type {
 	c.TypeCount++
+	c.addWork(workPerType)
 	t.flags = flags
 	t.objectFlags = objectFlags &^ (ObjectFlagsCouldContainTypeVariablesComputed | ObjectFlagsCouldContainTypeVariables | ObjectFlagsMembersResolved)
 	t.id = TypeId(c.TypeCount)
@@ -26716,6 +26727,7 @@ func (c *Checker) getUnionType(types []*Type) *Type {
 // circularly reference themselves and therefore cannot be subtype reduced during their declaration.
 // For example, "type Item = string | (() => Item" is a named type that circularly references itself.
 func (c *Checker) getUnionTypeEx(types []*Type, unionReduction UnionReduction, alias *TypeAlias, origin *Type) *Type {
+	c.addWork(workPerUnion)
 	if len(types) == 0 {
 		return c.neverType
 	}
