@@ -345,8 +345,10 @@ func (tx *DeclarationTransformer) transformSourceFile(node *ast.SourceFile) *ast
 		tx.cjsExportAssignmentName = nil
 		tx.cjsExportMembers = nil
 	}()
-	tx.cjsExportAssignmentVisitor.VisitNode(node.AsNode()) // collect nested module.exports= assignments
-	tx.expressionVisitor.VisitNode(node.AsNode())          // collect expando members (requires any export assignment be located in advance)
+	if node.CommonJSModuleIndicator != nil {
+		tx.cjsExportAssignmentVisitor.VisitNode(node.AsNode()) // collect nested module.exports= assignments
+	}
+	tx.expressionVisitor.VisitNode(node.AsNode()) // collect expando members (requires any export assignment be located in advance)
 	var combinedStatements *ast.StatementList
 	statements := tx.Visitor().VisitNodes(node.Statements)
 	combinedStatements = tx.transformAndReplaceLatePaintedStatements(statements)
@@ -2677,20 +2679,21 @@ func (tx *DeclarationTransformer) stripDeclareModifiers(node *ast.Node) *ast.Nod
 	return node // no need to recur into children, only strip at top-level
 }
 
+// The walks below visit every node of a file, but only the assignments they look for report
+// diagnostics, each in a context of its own; setting up a context for every other node only cost
+// allocations.
+
 func (tx *DeclarationTransformer) visitCJSExportAssignments(expression *ast.Node) *ast.Node {
 	if expression != nil {
-		_, cleanupDiagnosticContext := tx.setupDiagnosticContext(expression)
-		defer cleanupDiagnosticContext()
-		switch ast.GetAssignmentDeclarationKind(expression) {
-		case ast.JSDeclarationKindModuleExports:
-			if tx.state.currentSourceFile.CommonJSModuleIndicator != nil {
-				result := tx.transformExportAssignment(expression.Parent, expression, expression.AsBinaryExpression().Right, true /*isExportEquals*/)
-				if result != nil {
-					tx.cjsExportAssignment = result
-					tx.resultHasScopeMarker = true
-					tx.resultHasExternalModuleIndicator = true
-				}
+		if ast.GetAssignmentDeclarationKind(expression) == ast.JSDeclarationKindModuleExports {
+			_, cleanupDiagnosticContext := tx.setupDiagnosticContext(expression)
+			result := tx.transformExportAssignment(expression.Parent, expression, expression.AsBinaryExpression().Right, true /*isExportEquals*/)
+			if result != nil {
+				tx.cjsExportAssignment = result
+				tx.resultHasScopeMarker = true
+				tx.resultHasExternalModuleIndicator = true
 			}
+			cleanupDiagnosticContext()
 		}
 		return tx.cjsExportAssignmentVisitor.VisitEachChild(expression) // recur through the whole tree, looking for module.exports=
 	}
@@ -2699,24 +2702,28 @@ func (tx *DeclarationTransformer) visitCJSExportAssignments(expression *ast.Node
 
 func (tx *DeclarationTransformer) visitNestedExpression(expression *ast.Node) *ast.Node {
 	if expression != nil {
-		_, cleanupDiagnosticContext := tx.setupDiagnosticContext(expression)
-		defer cleanupDiagnosticContext()
 		switch ast.GetAssignmentDeclarationKind(expression) {
 		case ast.JSDeclarationKindProperty:
+			_, cleanupDiagnosticContext := tx.setupDiagnosticContext(expression)
 			tx.transformExpandoAssignment(expression.AsBinaryExpression())
+			cleanupDiagnosticContext()
 		case ast.JSDeclarationKindExportsProperty:
 			if tx.state.currentSourceFile.CommonJSModuleIndicator != nil {
+				_, cleanupDiagnosticContext := tx.setupDiagnosticContext(expression)
 				result := tx.transformCommonJSExport(expression, tx.getNameExpressionPreferringIdentifier(ast.GetElementOrPropertyAccessName(expression.AsBinaryExpression().Left)))
 				if result != nil {
 					tx.cjsExportMembers = append(tx.cjsExportMembers, result)
 				}
+				cleanupDiagnosticContext()
 			}
 		case ast.JSDeclarationKindObjectDefinePropertyExports:
 			if tx.state.currentSourceFile.CommonJSModuleIndicator != nil {
+				_, cleanupDiagnosticContext := tx.setupDiagnosticContext(expression)
 				result := tx.transformCommonJSExport(expression, tx.getNameExpressionPreferringIdentifier(expression.Arguments()[1]))
 				if result != nil {
 					tx.cjsExportMembers = append(tx.cjsExportMembers, result)
 				}
+				cleanupDiagnosticContext()
 			}
 		}
 		return tx.expressionVisitor.VisitEachChild(expression) // recur through the whole tree, looking for special assignments
