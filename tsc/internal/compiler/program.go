@@ -1489,6 +1489,15 @@ func (p *Program) GetGlobalDiagnostics(ctx context.Context) []*ast.Diagnostic {
 }
 
 func (p *Program) GetDeclarationDiagnostics(ctx context.Context, sourceFile *ast.SourceFile) []*ast.Diagnostic {
+	if sourceFile == nil && p.compilerCheckerPool != nil {
+		// The emit resolver of a file locks its checker for every query, so one task per checker
+		// gets through its files without contending for the lock.
+		diagnostics := make([][]*ast.Diagnostic, len(p.files))
+		p.compilerCheckerPool.forEachCheckerFileDo(p.files, p.SingleThreaded(), func(fileIndex int, file *ast.SourceFile) {
+			diagnostics[fileIndex] = p.getDeclarationDiagnosticsForFile(ctx, file)
+		})
+		return filterAndSortDiagnostics(slices.Concat(diagnostics...))
+	}
 	return p.collectDiagnostics(ctx, sourceFile, true /*concurrent*/, p.getDeclarationDiagnosticsForFile)
 }
 
