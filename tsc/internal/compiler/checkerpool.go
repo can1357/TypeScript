@@ -562,6 +562,25 @@ func (p *checkerPool) forEachCheckerGroupDo(ctx context.Context, files []*ast.So
 	wg.RunAndWait()
 }
 
+// forEachCheckerFileDo runs one task per checker in parallel, which calls cb for each of files
+// associated with its checker, in order. Unlike forEachCheckerGroupDo, the task does not hold the
+// checker's lock: cb must lock it for each use, as emit resolvers do.
+func (p *checkerPool) forEachCheckerFileDo(files []*ast.SourceFile, singleThreaded bool, cb func(fileIndex int, file *ast.SourceFile)) {
+	p.createCheckers()
+	fileAssociations := *p.fileAssociations.Load()
+	wg := core.NewWorkGroup(singleThreaded)
+	for _, c := range p.checkers {
+		wg.Queue(func() {
+			for i, file := range files {
+				if fileAssociations[file] == c {
+					cb(i, file)
+				}
+			}
+		})
+	}
+	wg.RunAndWait()
+}
+
 // forEachCheckerScheduleDo runs cb for each file on the checker a checkerSchedule assigns it to, and
 // associates the files with those checkers.
 func (p *checkerPool) forEachCheckerScheduleDo(files []*ast.SourceFile, cb func(c *checker.Checker, fileIndex int, file *ast.SourceFile)) {
