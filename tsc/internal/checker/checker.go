@@ -26601,6 +26601,35 @@ func (c *Checker) addTypesToUnion(sourceTypes []*Type, types []*Type) ([]*Type, 
 		}
 		types = append(types, t)
 	}
+	if len(sourceTypes) == 2 && sourceTypes[0].flags&sourceTypes[1].flags&TypeFlagsUnion != 0 {
+		for _, t := range sourceTypes {
+			if t.alias != nil || t.AsUnionType().origin != nil {
+				includes |= TypeFlagsUnion
+			}
+		}
+		// Union constituents are already sorted and unique. Merge the runs
+		// directly; filtering out never and nullable types preserves this order.
+		left, right := sourceTypes[0].Types(), sourceTypes[1].Types()
+		for len(left) != 0 && len(right) != 0 {
+			if left[0] == right[0] {
+				addType(left[0])
+				left, right = left[1:], right[1:]
+			} else if CompareTypes(left[0], right[0]) < 0 {
+				addType(left[0])
+				left = left[1:]
+			} else {
+				addType(right[0])
+				right = right[1:]
+			}
+		}
+		for _, t := range left {
+			addType(t)
+		}
+		for _, t := range right {
+			addType(t)
+		}
+		return types, includes
+	}
 	var lastType *Type
 	for _, t := range sourceTypes {
 		if t != lastType {
@@ -27456,6 +27485,13 @@ func (c *Checker) removeType(t *Type, targetType *Type) *Type {
 }
 
 func containsType(types []*Type, t *Type) bool {
+	// Small unions often contain the exact type being tested. Pointer hits avoid
+	// structural ordering comparisons; misses retain the normal binary search.
+	if len(types) <= 8 {
+		if slices.Contains(types, t) {
+			return true
+		}
+	}
 	_, ok := slices.BinarySearchFunc(types, t, CompareTypes)
 	return ok
 }
