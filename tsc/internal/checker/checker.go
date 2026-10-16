@@ -20036,7 +20036,7 @@ func (c *Checker) addInheritedMembers(symbols ast.SymbolTable, baseSymbols []*as
 		if !isStaticPrivateIdentifierProperty(base) {
 			if s, ok := symbols[base.Name()]; !ok || s.Flags()&ast.SymbolFlagsValue == 0 {
 				if symbols == nil {
-					symbols = make(ast.SymbolTable)
+					symbols = make(ast.SymbolTable, len(baseSymbols))
 				}
 				symbols[base.Name()] = base
 			}
@@ -29782,8 +29782,12 @@ func (c *Checker) getTemplateLiteralType(texts []string, types []*Type) *Type {
 		if !c.checkCrossProductUnion(types) {
 			return c.errorType
 		}
+		// Recursive calls consume the spans synchronously and construct their own
+		// normalized slices, so all alternatives can share this input copy.
+		spans := slices.Clone(types)
 		return c.mapType(types[unionIndex], func(t *Type) *Type {
-			return c.getTemplateLiteralType(texts, core.ReplaceElement(types, unionIndex, t))
+			spans[unionIndex] = t
+			return c.getTemplateLiteralType(texts, spans)
 		})
 	}
 	if slices.Contains(types, c.wildcardType) {
