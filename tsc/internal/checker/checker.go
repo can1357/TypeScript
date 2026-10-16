@@ -695,7 +695,7 @@ type Checker struct {
 	mergedSymbols                               map[*ast.Symbol]*ast.Symbol
 	mergedExportsChecked                        collections.Set[*ast.Symbol]
 	factory                                     ast.NodeFactory
-	nodeLinks                                   core.LinkStore[*ast.Node, NodeLinks]
+	nodeLinks                                   nodeLinkStore[NodeLinks]
 	signatureLinks                              nodeLinkStore[SignatureLinks]
 	symbolNodeLinks                             nodeLinkStore[SymbolNodeLinks]
 	typeNodeLinks                               nodeLinkStore[TypeNodeLinks]
@@ -705,11 +705,11 @@ type Checker struct {
 	switchStatementLinks                        core.LinkStore[*ast.Node, SwitchStatementLinks]
 	jsxElementLinks                             core.LinkStore[*ast.Node, JsxElementLinks]
 	computedNameLinks                           core.LinkStore[*ast.Node, ComputedNameNodeLinks]
-	symbolReferenceLinks                        core.LinkStore[*ast.Symbol, SymbolReferenceLinks]
+	symbolReferenceLinks                        symbolLinkStore[SymbolReferenceLinks]
 	valueSymbolLinks                            symbolLinkStore[ValueSymbolLinks]
-	mappedSymbolLinks                           core.LinkStore[*ast.Symbol, MappedSymbolLinks]
+	mappedSymbolLinks                           symbolLinkStore[MappedSymbolLinks]
 	deferredSymbolLinks                         core.LinkStore[*ast.Symbol, DeferredSymbolLinks]
-	aliasSymbolLinks                            core.LinkStore[*ast.Symbol, AliasSymbolLinks]
+	aliasSymbolLinks                            symbolLinkStore[AliasSymbolLinks]
 	moduleSymbolLinks                           core.LinkStore[*ast.Symbol, ModuleSymbolLinks]
 	lateBoundLinks                              core.LinkStore[*ast.Symbol, LateBoundLinks]
 	exportTypeLinks                             core.LinkStore[*ast.Symbol, ExportTypeLinks]
